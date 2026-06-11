@@ -1,0 +1,11 @@
+body{font-family:Arial,Helvetica,sans-serif;margin:32px;color:#17202a;background:#f7f9fb}
+h1,h2{color:#101820}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin:20px 0}
+.metric{background:#fff;border:1px solid #d8dee4;border-radius:6px;padding:14px}
+.metric strong{display:block;font-size:28px;margin-top:6px}
+table{width:100%;border-collapse:collapse;background:#fff;margin:12px 0 28px}
+th,td{border:1px solid #d8dee4;padding:8px;text-align:left;vertical-align:top}
+th{background:#edf2f7}
+.severity-CRITICAL{color:#a40000;font-weight:700}
+.severity-HIGH{color:#b54708;font-weight:700}
+.muted{color:#667085}

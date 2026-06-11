@@ -1,0 +1,24 @@
+{
+  "profile": "ci-ubuntu-release",
+  "hosts": 25,
+  "iterations": 3,
+  "limits": {
+    "analyze": {
+      "max_avg_ms": 2000
+    },
+    "report_build": {
+      "max_avg_ms": 500
+    },
+    "graph_export_dot": {
+      "max_avg_ms": 200
+    },
+    "incremental_analyze_skip": {
+      "max_avg_ms": 500
+    }
+  },
+  "trend": {
+    "baseline": "ci-baseline.json",
+    "max_regression_ratio": 1.25,
+    "max_regression_ms": 100
+  }
+}

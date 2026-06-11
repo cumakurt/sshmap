@@ -1,0 +1,36 @@
+database: sshmap.db
+
+runtime:
+  concurrency: 25
+  timeout_seconds: 10
+  max_targets: 65536
+
+scan:
+  user: audituser
+  key: /home/operator/.ssh/audit_ed25519
+  # identities_only: true
+  # use_agent: true
+  # identity_agent: /run/user/1000/ssh-agent.sock
+  sudo: true
+  transport: openssh
+  strict_host_key_checking: accept-new
+  connection_reuse: true
+  # proxy_jump: bastion.example.com
+  ports:
+    - 22
+
+discover:
+  ports:
+    - 22
+  concurrency: 100
+  timeout_seconds: 3
+
+serve:
+  listen: 127.0.0.1:8080
+  read_only: true
+  # dashboard: dashboard/dist
+
+report:
+  default_format: html
+
+risk_policy: examples/risk-policy.yaml

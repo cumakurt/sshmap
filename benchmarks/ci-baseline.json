@@ -1,0 +1,39 @@
+{
+  "database": "benchmarks/ci-baseline.db",
+  "hosts_seeded": 25,
+  "raw_evidence_items": 75,
+  "timings": [
+    {
+      "name": "analyze",
+      "iterations": 3,
+      "total_ms": 14,
+      "avg_ms": 4,
+      "min_ms": 4,
+      "max_ms": 6
+    },
+    {
+      "name": "report_build",
+      "iterations": 3,
+      "total_ms": 6,
+      "avg_ms": 2,
+      "min_ms": 2,
+      "max_ms": 2
+    },
+    {
+      "name": "graph_export_dot",
+      "iterations": 3,
+      "total_ms": 0,
+      "avg_ms": 0,
+      "min_ms": 0,
+      "max_ms": 0
+    },
+    {
+      "name": "incremental_analyze_skip",
+      "iterations": 3,
+      "total_ms": 0,
+      "avg_ms": 0,
+      "min_ms": 0,
+      "max_ms": 0
+    }
+  ]
+}

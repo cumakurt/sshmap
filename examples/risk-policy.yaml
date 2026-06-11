@@ -1,0 +1,16 @@
+rules:
+  SSH_KEY_REUSED_MANY_HOSTS:
+    enabled: true
+    high_threshold: 5
+    critical_threshold: 20
+
+  SSH_PASSWORD_AUTH_ENABLED:
+    enabled: true
+    severity: HIGH
+
+  SSH_FORWARD_AGENT_WILDCARD:
+    enabled: true
+    severity: HIGH
+
+  USER_SERVICE_ACCOUNT_INTERACTIVE_SHELL:
+    enabled: true

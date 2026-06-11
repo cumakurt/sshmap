@@ -1,0 +1,21 @@
+name: sshmap
+arch: amd64
+platform: linux
+version: "${SSHMAP_VERSION}"
+section: utils
+priority: optional
+maintainer: "SSHMap Contributors"
+description: |
+  Agentless SSH exposure management and access graph CLI.
+depends:
+  - openssh-client
+  - ca-certificates
+contents:
+  - src: ./dist/sshmap
+    dst: /usr/bin/sshmap
+    file_info:
+      mode: 0755
+  - src: ./packaging/sshmap.1.md
+    dst: /usr/share/man/man1/sshmap.1
+    file_info:
+      mode: 0644

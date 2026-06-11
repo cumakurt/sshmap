@@ -1,0 +1,3 @@
+rules:
+  SSH_ROOT_LOGIN_ENABLED:
+    enabled: false

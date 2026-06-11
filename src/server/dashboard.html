@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SSHMap Dashboard</title>
+  <style>
+    :root { --bg:#0f1419; --panel:#1a2332; --text:#e7ecf3; --muted:#8b98a8; --accent:#3b82f6; --critical:#ef4444; --high:#f97316; }
+    * { box-sizing:border-box; }
+    body { margin:0; font-family:Inter,Segoe UI,sans-serif; background:var(--bg); color:var(--text); }
+    header { padding:20px 28px; border-bottom:1px solid #243044; display:flex; justify-content:space-between; align-items:center; }
+    header h1 { margin:0; font-size:1.4rem; }
+    header p { margin:4px 0 0; color:var(--muted); font-size:.9rem; }
+    nav { display:flex; gap:8px; padding:12px 28px; border-bottom:1px solid #243044; flex-wrap:wrap; }
+    nav button { background:transparent; color:var(--muted); border:1px solid #243044; padding:8px 14px; border-radius:8px; cursor:pointer; }
+    nav button.active { color:var(--text); border-color:var(--accent); background:#172033; }
+    main { padding:24px 28px; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:14px; margin-bottom:24px; }
+    .card { background:var(--panel); border:1px solid #243044; border-radius:10px; padding:16px; }
+    .card span { color:var(--muted); font-size:.85rem; }
+    .card strong { display:block; font-size:1.8rem; margin-top:6px; }
+    table { width:100%; border-collapse:collapse; background:var(--panel); border:1px solid #243044; border-radius:10px; overflow:hidden; }
+    th,td { padding:10px 12px; border-bottom:1px solid #243044; text-align:left; font-size:.92rem; vertical-align:top; }
+    th { color:var(--muted); font-weight:600; background:#121a27; }
+    .severity-CRITICAL { color:var(--critical); font-weight:700; }
+    .severity-HIGH { color:var(--high); font-weight:700; }
+    .hidden { display:none; }
+    .toolbar { display:flex; gap:10px; margin-bottom:14px; flex-wrap:wrap; }
+    input, select { background:#121a27; color:var(--text); border:1px solid #243044; border-radius:8px; padding:8px 10px; }
+    pre { background:#121a27; border:1px solid #243044; border-radius:10px; padding:14px; overflow:auto; max-height:420px; }
+    .error { color:var(--critical); margin:12px 0; }
+    #graph-cy { width:100%; height:520px; border:1px solid #243044; border-radius:10px; background:#121a27; margin-bottom:16px; }
+    .graph-toolbar { display:flex; gap:10px; margin-bottom:12px; flex-wrap:wrap; align-items:center; }
+    .graph-toolbar button { background:#172033; color:var(--text); border:1px solid #243044; border-radius:8px; padding:8px 12px; cursor:pointer; }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/cytoscape@3.30.4/dist/cytoscape.min.js"></script>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>SSHMap Dashboard</h1>
+      <p>Read-only SSH exposure and access graph analysis</p>
+    </div>
+    <div id="summary-line" style="color:var(--muted);font-size:.9rem;"></div>
+  </header>
+  <nav id="nav"></nav>
+  <main>
+    <div id="error" class="error hidden"></div>
+    <section id="view-dashboard"></section>
+    <section id="view-hosts" class="hidden"></section>
+    <section id="view-users" class="hidden"></section>
+    <section id="view-keys" class="hidden"></section>
+    <section id="view-risks" class="hidden"></section>
+    <section id="view-graph" class="hidden"></section>
+    <section id="view-tools" class="hidden"></section>
+  </main>
+  <script>
+    const views = ["dashboard","hosts","users","keys","risks","graph","tools"];
+    const nav = document.getElementById("nav");
+    views.forEach(name => {
+      const button = document.createElement("button");
+      button.textContent = name.charAt(0).toUpperCase() + name.slice(1);
+      button.onclick = () => showView(name);
+      button.dataset.view = name;
+      nav.appendChild(button);
+    });
+
+    async function api(path) {
+      const response = await fetch(path, { headers: tokenHeader() });
+      if (!response.ok) throw new Error(await response.text());
+      return response.json();
+    }
+
+    function tokenHeader() {
+      const token = localStorage.getItem("sshmap_token");
+      return token ? { "X-SSHMap-Token": token } : {};
+    }
+
+    function showError(message) {
+      const el = document.getElementById("error");
+      el.textContent = message;
+      el.classList.remove("hidden");
+    }
+
+    function clearError() {
+      const el = document.getElementById("error");
+      el.textContent = "";
+      el.classList.add("hidden");
+    }
+
+    function showView(name) {
+      views.forEach(view => {
+        document.getElementById("view-" + view).classList.toggle("hidden", view !== name);
+        nav.querySelector('[data-view="' + view + '"]').classList.toggle("active", view === name);
+      });
+      loaders[name]();
+    }
+
+    function metricCard(label, value) {
+      return '<div class="card"><span>' + label + '</span><strong>' + value + '</strong></div>';
+    }
+
+    const loaders = {
+      async dashboard() {
+        clearError();
+        const summary = await api("/api/summary");
+        document.getElementById("summary-line").textContent =
+          summary.stats.hosts + " hosts · " + summary.stats.risks + " risks · " + summary.reused_keys + " reused keys";
+        document.getElementById("view-dashboard").innerHTML =
+          '<div class="grid">' +
+          metricCard("Hosts", summary.stats.hosts) +
+          metricCard("SSH Open", summary.ssh_open_hosts) +
+          metricCard("Users", summary.stats.users) +
+          metricCard("Public Keys", summary.stats.keys) +
+          metricCard("Critical Risks", summary.critical_risks) +
+          metricCard("High Risks", summary.high_risks) +
+          metricCard("Reused Keys", summary.reused_keys) +
+          '</div>';
+      },
+      async hosts() {
+        const hosts = await api("/api/hosts");
+        document.getElementById("view-hosts").innerHTML =
+          table(["ID","Hostname","IP","Port","Open","Users","Risks"],
+            hosts.map(h => [h.id, h.hostname || "-", h.ip_address, h.port, h.ssh_open ? "yes" : "no", h.user_count, h.risk_count]));
+      },
+      async users() {
+        const users = await api("/api/users");
+        document.getElementById("view-users").innerHTML =
+          table(["Username","Hosts","Keys","Sudo","Risks"],
+            users.map(u => [u.username, u.host_count, u.key_count, u.sudo_rule_count, u.risk_count]));
+      },
+      async keys() {
+        const keys = await api("/api/keys/reuse");
+        document.getElementById("view-keys").innerHTML =
+          '<p style="color:var(--muted);margin-top:0;">Showing reused public keys only.</p>' +
+          table(["ID","Type","Fingerprint","Hosts","Users","Root","Risks"],
+            keys.map(k => [k.id, k.key_type, k.fingerprint_sha256, k.host_count, k.user_count, k.root_usage_count, k.risk_count]));
+      },
+      async risks() {
+        const risks = await api("/api/risks?limit=100");
+        document.getElementById("view-risks").innerHTML =
+          '<pre id="risk-detail">Select a risk row to view full details.</pre>' +
+          riskTable(risks);
+      },
+      async graph() {
+        const edges = await api("/api/graph");
+        document.getElementById("view-graph").innerHTML =
+          '<div class="graph-toolbar">' +
+          '<span style="color:var(--muted);">' + edges.length + ' graph edges loaded.</span>' +
+          '<button type="button" onclick="showGraphCanvas()">Canvas view</button>' +
+          '<button type="button" onclick="showGraphTable()">Table view</button>' +
+          '</div>' +
+          '<div id="graph-cy"></div>' +
+          '<div id="graph-table"></div>';
+        window.__graphEdges = edges;
+        showGraphCanvas();
+      },
+      tools() {
+        document.getElementById("view-tools").innerHTML =
+          '<div class="toolbar"><label>API token <input id="token-input" placeholder="optional"></label><button onclick="saveToken()">Save token</button></div>' +
+          '<div class="toolbar"><label>Path from <input id="path-from" placeholder="key:SHA256:..."></label><label>Path to <input id="path-to" placeholder="host:web01"></label><button onclick="runPath()">Find path</button></div>' +
+          '<div class="toolbar"><label>Blast radius user <input id="blast-user" placeholder="deploy"></label><button onclick="runBlast()">Analyze</button><button onclick="loadExceptions()">Load exceptions</button></div>' +
+          '<pre id="tools-output">Use the controls above to query path and blast radius analysis.</pre>';
+        document.getElementById("token-input").value = localStorage.getItem("sshmap_token") || "";
+      }
+    };
+
+    function table(headers, rows) {
+      return '<table><thead><tr>' + headers.map(h => '<th>' + h + '</th>').join('') + '</tr></thead><tbody>' +
+        rows.map(row => '<tr>' + row.map(cell => '<td>' + cell + '</td>').join('') + '</tr>').join('') +
+        '</tbody></table>';
+    }
+
+    function riskTable(risks) {
+      return '<table><thead><tr><th>ID</th><th>Severity</th><th>Code</th><th>Target</th><th>Title</th></tr></thead><tbody>' +
+        risks.map(function(r) {
+          return '<tr style="cursor:pointer" onclick="loadRiskDetail(' + r.id + ')"><td>' +
+            r.id + '</td><td>' + severityCell(r.severity) + '</td><td>' +
+            r.risk_code + '</td><td>' + riskTarget(r) + '</td><td>' + r.title + '</td></tr>';
+        }).join('') +
+        '</tbody></table>';
+    }
+
+    async function loadRiskDetail(id) {
+      const risk = await api("/api/risks/" + id);
+      document.getElementById("risk-detail").textContent = JSON.stringify(risk, null, 2);
+    }
+
+    function severityCell(value) {
+      return '<span class="severity-' + value + '">' + value + '</span>';
+    }
+
+    function riskTarget(risk) {
+      if (risk.username) return risk.username + "@" + (risk.hostname || risk.ip_address || "unknown");
+      return risk.hostname || risk.ip_address || risk.public_key_fingerprint || "global";
+    }
+
+    function cytoscapeNodeId(type, id) {
+      return type + ":" + id;
+    }
+
+    function toCytoscapeElements(edges) {
+      const nodes = new Map();
+      edges.forEach(function(edge) {
+        nodes.set(cytoscapeNodeId(edge.from_type, edge.from_id), {
+          data: { id: cytoscapeNodeId(edge.from_type, edge.from_id), label: edge.from_label, node_type: edge.from_type }
+        });
+        nodes.set(cytoscapeNodeId(edge.to_type, edge.to_id), {
+          data: { id: cytoscapeNodeId(edge.to_type, edge.to_id), label: edge.to_label, node_type: edge.to_type }
+        });
+      });
+      return {
+        nodes: Array.from(nodes.values()),
+        edges: edges.map(function(edge) {
+          return {
+            data: {
+              id: "edge:" + edge.id,
+              source: cytoscapeNodeId(edge.from_type, edge.from_id),
+              target: cytoscapeNodeId(edge.to_type, edge.to_id),
+              label: edge.edge_type
+            }
+          };
+        })
+      };
+    }
+
+    function showGraphCanvas() {
+      const edges = window.__graphEdges || [];
+      document.getElementById("graph-cy").classList.remove("hidden");
+      document.getElementById("graph-table").classList.add("hidden");
+      const elements = toCytoscapeElements(edges.slice(0, 500));
+      cytoscape({
+        container: document.getElementById("graph-cy"),
+        elements: elements,
+        style: [
+          { selector: "node", style: { "background-color": "#3b82f6", "label": "data(label)", "color": "#e7ecf3", "font-size": 10, "text-wrap": "wrap", "text-max-width": 120 } },
+          { selector: "edge", style: { "width": 2, "line-color": "#64748b", "target-arrow-color": "#64748b", "target-arrow-shape": "triangle", "curve-style": "bezier", "label": "data(label)", "font-size": 8, "color": "#94a3b8" } }
+        ],
+        layout: { name: "cose", animate: false, fit: true, padding: 30 }
+      });
+    }
+
+    function showGraphTable() {
+      const edges = window.__graphEdges || [];
+      document.getElementById("graph-cy").classList.add("hidden");
+      document.getElementById("graph-table").classList.remove("hidden");
+      document.getElementById("graph-table").innerHTML =
+        table(["From","Edge","To","Confidence"],
+          edges.slice(0, 200).map(function(e) { return [e.from_label, e.edge_type, e.to_label, e.confidence]; }));
+    }
+
+    function saveToken() {
+      const value = document.getElementById("token-input").value.trim();
+      if (value) localStorage.setItem("sshmap_token", value); else localStorage.removeItem("sshmap_token");
+      document.getElementById("tools-output").textContent = "Token saved.";
+    }
+
+    async function runPath() {
+      const from = document.getElementById("path-from").value.trim();
+      const to = document.getElementById("path-to").value.trim();
+      const result = await api("/api/path?from=" + encodeURIComponent(from) + "&to=" + encodeURIComponent(to));
+      document.getElementById("tools-output").textContent = JSON.stringify(result, null, 2);
+    }
+
+    async function runBlast() {
+      const user = document.getElementById("blast-user").value.trim();
+      const result = await api("/api/blast-radius?user=" + encodeURIComponent(user));
+      document.getElementById("tools-output").textContent = JSON.stringify(result, null, 2);
+    }
+
+    async function loadExceptions() {
+      const result = await api("/api/exceptions");
+      document.getElementById("tools-output").textContent = JSON.stringify(result, null, 2);
+    }
+
+    showView("dashboard").catch(error => showError(error.message));
+  </script>
+</body>
+</html>

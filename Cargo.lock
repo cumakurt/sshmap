@@ -2281,7 +2281,7 @@ dependencies = [
 
 [[package]]
 name = "sshmap"
-version = "2.0.5"
+version = "1.0.1"
 dependencies = [
  "anyhow",
  "axum",

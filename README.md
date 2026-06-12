@@ -2,7 +2,7 @@
 
 SSHMap is an agentless SSH exposure management CLI. It discovers SSH services, collects read-only configuration evidence, analyzes security risks, builds a directed access graph, and exposes inventory through a command-line interface, REST API, and React dashboard.
 
-**Current release:** `2.0.5`  
+**Current release:** `1.0.1`  
 **License:** [GNU General Public License v3.0 or later](LICENSE) (GPL-3.0-or-later)
 
 ## Author

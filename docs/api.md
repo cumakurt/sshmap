@@ -4,7 +4,11 @@
 
 ## Authentication
 
-When the server is started with `--token`, send the same value in the `X-SSHMap-Token` request header. Requests without a valid token receive HTTP 401.
+When the server is started with `--token`, send the same value in the `X-SSHMap-Token` request header. Requests without a valid token receive HTTP 401. Token comparison is constant-time.
+
+Non-loopback `--listen` addresses require `--token`. Loopback binds allow serving without a token, but that mode should be limited to trusted local development.
+
+Internal server errors return a generic message; details are logged by the server process.
 
 ```bash
 curl -H "X-SSHMap-Token: $SSHMAP_TOKEN" http://127.0.0.1:8080/api/summary
@@ -83,7 +87,7 @@ curl 'http://127.0.0.1:8080/api/users?q=deploy&min_hosts=5&min_risks=1&limit=500
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `severity` | string | Filter by severity (`CRITICAL`, `HIGH`, `MEDIUM`, `LOW`) |
+| `severity` | string | Filter by severity (`CRITICAL`, `HIGH`, `MEDIUM`, `LOW`); invalid values return HTTP 400 |
 | `code` | string | Exact match on risk code |
 | `limit` | integer | Maximum rows returned (default `100`, max `10000`) |
 
@@ -97,9 +101,17 @@ curl 'http://127.0.0.1:8080/api/risks?severity=CRITICAL&code=SSH_ROOT_LOGIN&limi
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/graph` | Access graph edges |
+| GET | `/api/graph` | Access graph edges (see query parameters below) |
 | GET | `/api/path?from=...&to=...` | Shortest directed path between graph nodes |
 | GET | `/api/blast-radius?user=...` | Reachable hosts from a user's graph entry points |
+
+### `GET /api/graph` query parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `limit` | integer | Maximum edges returned (default `1000`, max `10000`) |
+
+`from`, `to`, and `user` parameters on path/blast-radius endpoints must be non-empty. Empty values return HTTP 400.
 
 Graph node references use the same `type:id` or label forms accepted by `sshmap graph path`.
 

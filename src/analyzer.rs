@@ -13,7 +13,10 @@ pub fn run_analysis(
     policy: &RiskPolicy,
     incremental: bool,
 ) -> Result<AnalysisSummary> {
-    if incremental && let Some(since) = db::get_last_analysis_timestamp(db_path)? {
+    if incremental
+        && matches!(scope, AnalyzeScope::Graph)
+        && let Some(since) = db::get_last_analysis_timestamp(db_path)?
+    {
         let new_items = db::count_new_raw_evidence_since(db_path, &since)?;
         if new_items == 0 {
             let stats = db::load_database_stats(db_path)?;
@@ -245,7 +248,7 @@ mod tests {
         db::initialize_database(&db_path).expect("initialize database");
         db::record_analysis_finished(&db_path).expect("record analysis finished");
 
-        let summary = run_analysis(&db_path, AnalyzeScope::All, &RiskPolicy::default(), true)
+        let summary = run_analysis(&db_path, AnalyzeScope::Graph, &RiskPolicy::default(), true)
             .expect("incremental analysis");
 
         assert!(summary.skipped);

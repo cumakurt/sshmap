@@ -20,6 +20,7 @@ mod report;
 mod risk;
 mod scope;
 mod server;
+mod target;
 mod transport;
 
 use anyhow::Result;
@@ -234,8 +235,15 @@ async fn main() -> Result<()> {
         }
         Command::Risks { command } => match command {
             cli::RisksCommand::List(args) => {
+                let severity = args
+                    .severity
+                    .map(|value| value.to_ascii_uppercase())
+                    .filter(|value| !value.is_empty());
+                if let Some(severity) = &severity {
+                    risk::validate_risk_severity(severity)?;
+                }
                 let query = models::RiskQuery {
-                    severity: args.severity.map(|value| value.to_ascii_uppercase()),
+                    severity,
                     code: args.code.map(|value| value.to_ascii_uppercase()),
                     limit: args.limit,
                 };
@@ -391,7 +399,7 @@ async fn main() -> Result<()> {
             let Some(end) = db::resolve_graph_node_ref(&args.db, &args.to)? else {
                 anyhow::bail!("graph node {} was not found", args.to);
             };
-            let edges = db::list_graph_edges(&args.db)?;
+            let edges = db::list_graph_edges_for_analysis(&args.db)?;
             let path = graph::find_path(&edges, start, end);
             if args.json {
                 println!("{}", serde_json::to_string_pretty(&path)?);
@@ -404,7 +412,7 @@ async fn main() -> Result<()> {
             if entry_points.is_empty() {
                 anyhow::bail!("user {} was not found in the analyzed inventory", args.user);
             }
-            let edges = db::list_graph_edges(&args.db)?;
+            let edges = db::list_graph_edges_for_analysis(&args.db)?;
             let blast_radius = graph::compute_blast_radius(&edges, &entry_points, &args.user);
             if args.json {
                 println!("{}", serde_json::to_string_pretty(&blast_radius)?);

@@ -28,7 +28,10 @@ jobs:
           cache-dependency-path: dashboard/package-lock.json
       - run: npm ci
       - run: npm run build
+
+  bench:
     runs-on: ubuntu-latest
+    needs: rust
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

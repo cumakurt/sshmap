@@ -262,7 +262,7 @@ Run only part of the analysis pipeline:
 ```bash
 sshmap analyze --only risks --db sshmap.db
 sshmap analyze --only graph --db sshmap.db
-sshmap analyze --incremental --db sshmap.db
+sshmap analyze --incremental --only graph --db sshmap.db
 ```
 
 Skip analysis when no new evidence was collected since the last successful run.
@@ -639,13 +639,17 @@ React dashboard routes include `/`, `/hosts`, `/users`, `/keys`, `/risks`, `/gra
 
 See `docs/dashboard.md` for local development with the Vite dev server and `docs/api.md` for REST endpoint reference.
 
-Optional API token authentication:
+Optional API token authentication (required when listening on non-loopback addresses):
 
 ```bash
 sshmap serve \
   --db sshmap.db \
+  --listen 127.0.0.1:8080 \
+  --read-only \
   --token "$SSHMAP_TOKEN"
 ```
+
+When bound to loopback only, the token is optional but strongly recommended outside single-user development setups.
 
 Send the token using the `X-SSHMap-Token` header. The dashboard stores the token in browser local storage when configured from the Tools tab.
 
@@ -662,7 +666,7 @@ GET /api/keys/reuse
 GET /api/keys/{target}
 GET /api/risks?severity=&code=&limit=
 GET /api/risks/{id}
-GET /api/graph
+GET /api/graph?limit=
 GET /api/path?from=...&to=...
 GET /api/blast-radius?user=...
 GET /api/baselines

@@ -29,7 +29,7 @@ fn exception_is_active(exception: &RiskExceptionRecord, now: chrono::DateTime<Ut
     exception.expires_at.as_ref().is_none_or(|expires_at| {
         chrono::DateTime::parse_from_rfc3339(expires_at)
             .map(|value| value.with_timezone(&Utc) > now)
-            .unwrap_or(true)
+            .unwrap_or(false)
     })
 }
 
@@ -92,5 +92,35 @@ mod exception_tests {
         }];
 
         assert!(apply_exceptions(risks, &exceptions).is_empty());
+    }
+
+    #[test]
+    fn ignores_exceptions_with_invalid_expiry() {
+        let risks = vec![GeneratedRisk {
+            host_id: Some(1),
+            username: None,
+            public_key_fingerprint: None,
+            risk_code: "SSH_PASSWORD_AUTH_ENABLED".to_string(),
+            severity: "HIGH".to_string(),
+            score: 75,
+            confidence: "HIGH".to_string(),
+            title: "Password auth".to_string(),
+            description: String::new(),
+            impact: String::new(),
+            evidence: String::new(),
+            recommendation: String::new(),
+        }];
+        let exceptions = vec![RiskExceptionRecord {
+            id: 1,
+            risk_code: "SSH_PASSWORD_AUTH_ENABLED".to_string(),
+            host_id: Some(1),
+            username: None,
+            public_key_fingerprint: None,
+            reason: "accepted risk".to_string(),
+            created_at: Utc::now().to_rfc3339(),
+            expires_at: Some("not-a-date".to_string()),
+        }];
+
+        assert_eq!(apply_exceptions(risks, &exceptions).len(), 1);
     }
 }

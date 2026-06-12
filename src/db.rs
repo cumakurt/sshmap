@@ -10,6 +10,7 @@ use crate::models::{
     RiskRecord, ScanRunSummary, SshClientConfigEntryRecord, SudoRuleRecord, UserAccountRecord,
     UserDetailRecord, UserQuery, UserSummaryRecord,
 };
+use crate::target::{hostname_hint, is_ip_address, parse_host_target};
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, params};
@@ -161,7 +162,7 @@ where
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
     .with_context(|| format!("failed to open database read-only at {}", path.display()))?;
-    apply_pragmas(&connection)?;
+    apply_read_only_pragmas(&connection)?;
     callback(&connection)
 }
 
@@ -388,7 +389,7 @@ pub fn update_hostnames_from_evidence(path: &Path) -> Result<usize> {
             continue;
         }
         connection.execute(
-            "UPDATE hosts SET hostname = COALESCE(hostname, ?1), fqdn = ?1 WHERE id = ?2",
+            "UPDATE hosts SET hostname = COALESCE(hostname, ?1) WHERE id = ?2",
             params![hostname, host_id],
         )?;
         updated += 1;
@@ -542,8 +543,16 @@ pub fn load_raw_evidence_for_analysis(path: &Path) -> Result<Vec<RawEvidenceForA
 
     let mut statement = connection.prepare(
         "SELECT host_id, evidence_type, source, content, exit_code
-         FROM raw_evidence
+         FROM raw_evidence re
          WHERE content IS NOT NULL AND length(content) > 0
+           AND id = (
+             SELECT MAX(re2.id)
+             FROM raw_evidence re2
+             WHERE re2.host_id = re.host_id
+               AND re2.evidence_type = re.evidence_type
+               AND re2.source = re.source
+               AND re2.content = re.content
+           )
          ORDER BY id",
     )?;
 
@@ -824,8 +833,10 @@ fn list_hosts_connection(connection: &Connection, query: &HostQuery) -> Result<V
         values.push(rusqlite::types::Value::from(source.clone()));
     }
     if let Some(search) = &query.search {
-        conditions.push("(h.hostname LIKE ? OR h.fqdn LIKE ? OR h.ip_address LIKE ?)");
-        let pattern = format!("%{}%", search);
+        conditions.push(
+            "(h.hostname LIKE ? ESCAPE '\\' OR h.fqdn LIKE ? ESCAPE '\\' OR h.ip_address LIKE ? ESCAPE '\\')",
+        );
+        let pattern = like_contains_pattern(search);
         values.push(rusqlite::types::Value::from(pattern.clone()));
         values.push(rusqlite::types::Value::from(pattern.clone()));
         values.push(rusqlite::types::Value::from(pattern));
@@ -920,8 +931,8 @@ fn list_user_summaries_connection(
     let mut values = Vec::new();
 
     if let Some(search) = &query.search {
-        sql.push_str(" WHERE u.username LIKE ?");
-        values.push(rusqlite::types::Value::from(format!("%{}%", search)));
+        sql.push_str(" WHERE u.username LIKE ? ESCAPE '\\'");
+        values.push(rusqlite::types::Value::from(like_contains_pattern(search)));
     }
 
     sql.push_str(" GROUP BY u.username");
@@ -1082,6 +1093,12 @@ pub fn add_risk_exception(
     let connection = Connection::open(path)
         .with_context(|| format!("failed to open database at {}", path.display()))?;
     apply_pragmas(&connection)?;
+
+    if let Some(expires_at) = &exception.expires_at {
+        chrono::DateTime::parse_from_rfc3339(expires_at).with_context(|| {
+            format!("invalid expires_at timestamp: {expires_at}; use RFC3339 format")
+        })?;
+    }
 
     let created_at = Utc::now().to_rfc3339();
     connection.execute(
@@ -1270,11 +1287,31 @@ pub fn list_graph_edges(path: &Path) -> Result<Vec<GraphEdgeRecord>> {
     let connection = Connection::open(path)
         .with_context(|| format!("failed to open database at {}", path.display()))?;
     apply_pragmas(&connection)?;
-    list_graph_edges_connection(&connection)
+    list_graph_edges_connection(&connection, None)
 }
 
-pub fn list_graph_edges_read_only(path: &Path) -> Result<Vec<GraphEdgeRecord>> {
-    with_read_only_connection(path, list_graph_edges_connection)
+pub const GRAPH_ANALYSIS_EDGE_LIMIT: usize = 100_000;
+
+pub fn list_graph_edges_read_only_limited(
+    path: &Path,
+    limit: usize,
+) -> Result<Vec<GraphEdgeRecord>> {
+    with_read_only_connection(path, |connection| {
+        list_graph_edges_connection(connection, Some(limit))
+    })
+}
+
+pub fn list_graph_edges_for_analysis(path: &Path) -> Result<Vec<GraphEdgeRecord>> {
+    list_graph_edges_read_only_limited(path, GRAPH_ANALYSIS_EDGE_LIMIT)
+}
+
+pub fn count_open_risks_by_severity_read_only(path: &Path) -> Result<(usize, usize)> {
+    with_read_only_connection(path, |connection| {
+        Ok((
+            count_risks_by_severity(connection, "CRITICAL")?,
+            count_risks_by_severity(connection, "HIGH")?,
+        ))
+    })
 }
 
 pub fn list_known_host_entries(path: &Path, limit: usize) -> Result<Vec<KnownHostEntryRecord>> {
@@ -1394,15 +1431,32 @@ pub fn list_risk_exceptions_read_only(path: &Path) -> Result<Vec<RiskExceptionRe
     with_read_only_connection(path, list_risk_exceptions_connection)
 }
 
-fn list_graph_edges_connection(connection: &Connection) -> Result<Vec<GraphEdgeRecord>> {
-    let mut statement = connection.prepare(
-        "SELECT
-            id, from_type, from_id, from_label, to_type, to_id, to_label,
-            edge_type, weight, confidence, evidence
-         FROM graph_edges
-         ORDER BY id",
-    )?;
-    let rows = statement.query_map([], map_graph_edge_record)?;
+fn list_graph_edges_connection(
+    connection: &Connection,
+    limit: Option<usize>,
+) -> Result<Vec<GraphEdgeRecord>> {
+    let sql = match limit {
+        Some(_) => {
+            "SELECT
+                id, from_type, from_id, from_label, to_type, to_id, to_label,
+                edge_type, weight, confidence, evidence
+             FROM graph_edges
+             ORDER BY id
+             LIMIT ?1"
+        }
+        None => {
+            "SELECT
+                id, from_type, from_id, from_label, to_type, to_id, to_label,
+                edge_type, weight, confidence, evidence
+             FROM graph_edges
+             ORDER BY id"
+        }
+    };
+    let mut statement = connection.prepare(sql)?;
+    let rows = match limit {
+        Some(limit) => statement.query_map(params![limit as i64], map_graph_edge_record)?,
+        None => statement.query_map([], map_graph_edge_record)?,
+    };
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .context("failed to list graph edges")
 }
@@ -1441,6 +1495,11 @@ fn resolve_graph_node_ref_connection(
     }
 }
 
+fn apply_read_only_pragmas(connection: &Connection) -> Result<()> {
+    connection.busy_timeout(std::time::Duration::from_secs(5))?;
+    Ok(())
+}
+
 fn apply_pragmas(connection: &Connection) -> Result<()> {
     connection.pragma_update(None, "foreign_keys", "ON")?;
     connection.pragma_update(None, "journal_mode", "WAL")?;
@@ -1449,6 +1508,17 @@ fn apply_pragmas(connection: &Connection) -> Result<()> {
     connection.pragma_update(None, "temp_store", "MEMORY")?;
     connection.busy_timeout(std::time::Duration::from_secs(5))?;
     Ok(())
+}
+
+fn escape_like_pattern(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
+fn like_contains_pattern(value: &str) -> String {
+    format!("%{}%", escape_like_pattern(value))
 }
 
 fn apply_migrations(connection: &Connection) -> Result<()> {
@@ -1619,6 +1689,18 @@ fn insert_baseline_risk_snapshot(
 }
 
 fn upsert_host(connection: &Connection, result: &DiscoveryResult) -> Result<()> {
+    let port = i64::from(result.port);
+    if let Some(host_id) = find_host_id_for_target(connection, &result.host, port)? {
+        return update_existing_host_record(
+            connection,
+            host_id,
+            &result.host,
+            result.ssh_open,
+            result.banner.as_deref(),
+            "discover",
+        );
+    }
+
     let now = Utc::now().to_rfc3339();
     let hostname = result.hostname_hint();
     connection.execute(
@@ -1646,6 +1728,20 @@ fn upsert_host(connection: &Connection, result: &DiscoveryResult) -> Result<()> 
 }
 
 fn upsert_scanned_host(connection: &Connection, result: &HostScanResult) -> Result<i64> {
+    if let Some(host_id) =
+        find_host_id_for_target(connection, &result.host, i64::from(result.port))?
+    {
+        update_existing_host_record(
+            connection,
+            host_id,
+            &result.host,
+            result.succeeded(),
+            None,
+            "scan",
+        )?;
+        return Ok(host_id);
+    }
+
     let now = Utc::now().to_rfc3339();
     let hostname = hostname_hint(&result.host);
     connection.execute(
@@ -1704,12 +1800,57 @@ fn insert_raw_evidence(
     Ok(())
 }
 
-fn hostname_hint(value: &str) -> Option<&str> {
-    if value.parse::<std::net::IpAddr>().is_ok() {
-        None
-    } else {
-        Some(value)
-    }
+fn find_host_id_for_target(
+    connection: &Connection,
+    target: &str,
+    port: i64,
+) -> Result<Option<i64>> {
+    connection
+        .query_row(
+            "SELECT id FROM hosts
+             WHERE port = ?1
+               AND (ip_address = ?2 OR hostname = ?2 OR fqdn = ?2)
+             ORDER BY id
+             LIMIT 1",
+            params![port, target],
+            |row| row.get(0),
+        )
+        .optional()
+        .context("failed to resolve host alias")
+}
+
+fn update_existing_host_record(
+    connection: &Connection,
+    host_id: i64,
+    target: &str,
+    ssh_open: bool,
+    ssh_banner: Option<&str>,
+    source: &str,
+) -> Result<()> {
+    let now = Utc::now().to_rfc3339();
+    let hostname = hostname_hint(target).map(str::to_string);
+    let ip_address = is_ip_address(target).then(|| target.to_string());
+
+    connection.execute(
+        "UPDATE hosts SET
+            hostname = COALESCE(?1, hostname),
+            ip_address = COALESCE(?2, ip_address),
+            ssh_open = ?3,
+            ssh_banner = COALESCE(?4, ssh_banner),
+            last_seen = ?5,
+            source = ?6
+         WHERE id = ?7",
+        params![
+            hostname,
+            ip_address,
+            ssh_open as i64,
+            ssh_banner,
+            now,
+            source,
+            host_id
+        ],
+    )?;
+    Ok(())
 }
 
 fn upsert_imported_host(connection: &Connection, host: &ImportedHost) -> Result<()> {
@@ -1738,8 +1879,14 @@ fn upsert_imported_host(connection: &Connection, host: &ImportedHost) -> Result<
 }
 
 fn upsert_import_host_by_target(connection: &Connection, target: &str) -> Result<i64> {
+    let (ip_address, port, hostname) = parse_host_target(target)
+        .with_context(|| format!("invalid import host target: {target}"))?;
+    if let Some(host_id) = find_host_id_for_target(connection, &ip_address, port)? {
+        update_existing_host_record(connection, host_id, &ip_address, true, None, "import")?;
+        return Ok(host_id);
+    }
+
     let now = Utc::now().to_rfc3339();
-    let (ip_address, port, hostname) = parse_host_target(target);
     connection.execute(
         "INSERT INTO hosts (
             hostname, ip_address, port, ssh_open, first_seen, last_seen, source
@@ -1757,21 +1904,6 @@ fn upsert_import_host_by_target(connection: &Connection, target: &str) -> Result
             |row| row.get(0),
         )
         .context("failed to resolve imported host")
-}
-
-fn parse_host_target(target: &str) -> (String, i64, Option<String>) {
-    if let Some((host, port)) = target.rsplit_once(':')
-        && let Ok(port) = port.parse::<i64>()
-    {
-        let hostname = hostname_hint(host).map(str::to_string);
-        return (host.to_string(), port, hostname);
-    }
-
-    (
-        target.to_string(),
-        22,
-        hostname_hint(target).map(str::to_string),
-    )
 }
 
 fn clear_normalized_tables(connection: &Connection) -> Result<()> {

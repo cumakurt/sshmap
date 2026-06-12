@@ -8,6 +8,16 @@ use crate::models::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
+const VALID_RISK_SEVERITIES: &[&str] = &["CRITICAL", "HIGH", "MEDIUM", "LOW"];
+
+pub fn validate_risk_severity(severity: &str) -> anyhow::Result<()> {
+    if VALID_RISK_SEVERITIES.contains(&severity) {
+        Ok(())
+    } else {
+        anyhow::bail!("severity must be one of CRITICAL, HIGH, MEDIUM, or LOW")
+    }
+}
+
 pub fn generate_risks(analysis: &NormalizedAnalysis, policy: &RiskPolicy) -> Vec<GeneratedRisk> {
     let mut risks = Vec::new();
     risks.extend(generate_sshd_config_risks(analysis));
@@ -116,20 +126,6 @@ fn generate_sshd_config_risks(analysis: &NormalizedAnalysis) -> Vec<GeneratedRis
                     entry.source_file, entry.line_number
                 ),
                 recommendation: "Disable AllowAgentForwarding unless explicitly required.",
-            })),
-            ("stricthostkeychecking", "no") => risks.push(host_risk(HostRiskInput {
-                host_id: entry.host_id,
-                risk_code: "SSH_STRICT_HOST_KEY_CHECKING_DISABLED",
-                severity: "HIGH",
-                score: 70,
-                title: "Strict host key checking is disabled",
-                description: "The SSH daemon disables strict host key checking.",
-                impact: "Clients may connect without validating host identity, increasing MITM risk.",
-                evidence: format!(
-                    "{}:{} sets StrictHostKeyChecking no",
-                    entry.source_file, entry.line_number
-                ),
-                recommendation: "Set StrictHostKeyChecking to yes or accept-new.",
             })),
             ("gatewayports", "yes") => risks.push(host_risk(HostRiskInput {
                 host_id: entry.host_id,
@@ -546,16 +542,36 @@ fn generate_combined_risks(analysis: &NormalizedAnalysis) -> Vec<GeneratedRisk> 
             .push(entry);
     }
 
-    let nopasswd_users_by_host: BTreeMap<i64, BTreeSet<String>> = analysis
-        .sudo_rules
-        .iter()
-        .filter(|rule| rule.nopasswd && rule.subject_type == "user")
-        .fold(BTreeMap::new(), |mut map, rule| {
-            map.entry(rule.host_id)
-                .or_default()
-                .insert(rule.subject.clone());
-            map
-        });
+    let mut group_members_by_host: BTreeMap<(i64, String), BTreeSet<String>> = BTreeMap::new();
+    for group in &analysis.groups {
+        group_members_by_host
+            .entry((group.host_id, group.group_name.clone()))
+            .or_default()
+            .extend(group.members.iter().cloned());
+    }
+
+    let mut nopasswd_users_by_host: BTreeMap<i64, BTreeSet<String>> = BTreeMap::new();
+    for rule in analysis.sudo_rules.iter().filter(|rule| rule.nopasswd) {
+        match rule.subject_type.as_str() {
+            "user" => {
+                nopasswd_users_by_host
+                    .entry(rule.host_id)
+                    .or_default()
+                    .insert(rule.subject.clone());
+            }
+            "group" => {
+                if let Some(members) =
+                    group_members_by_host.get(&(rule.host_id, rule.subject.clone()))
+                {
+                    nopasswd_users_by_host
+                        .entry(rule.host_id)
+                        .or_default()
+                        .extend(members.iter().cloned());
+                }
+            }
+            _ => {}
+        }
+    }
 
     let mut risks = Vec::new();
     for (fingerprint, entries) in by_fingerprint {

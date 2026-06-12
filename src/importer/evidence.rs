@@ -24,7 +24,7 @@ pub fn import_file_evidence(
     let mut import_content = content;
     if evidence_type == "authorized_keys" {
         let username = username.unwrap_or("unknown");
-        let source_file = format!("/home/{username}/.ssh/authorized_keys");
+        let source_file = authorized_keys_source_path(username);
         import_content = format!("\n--- SSHMAP_FILE:{source_file} ---\n{import_content}");
     }
 
@@ -85,4 +85,33 @@ pub fn import_json_report(path: &Path, db_path: &Path) -> Result<crate::models::
         .collect::<Vec<_>>();
 
     store_hosts(db_path, "json", &imported_hosts)
+}
+
+fn authorized_keys_source_path(username: &str) -> String {
+    if username == "root" {
+        "/root/.ssh/authorized_keys".to_string()
+    } else {
+        format!("/home/{username}/.ssh/authorized_keys")
+    }
+}
+
+#[cfg(test)]
+mod import_tests {
+    use super::*;
+
+    #[test]
+    fn root_authorized_keys_use_root_home_path() {
+        assert_eq!(
+            authorized_keys_source_path("root"),
+            "/root/.ssh/authorized_keys"
+        );
+    }
+
+    #[test]
+    fn regular_user_authorized_keys_use_home_path() {
+        assert_eq!(
+            authorized_keys_source_path("deploy"),
+            "/home/deploy/.ssh/authorized_keys"
+        );
+    }
 }

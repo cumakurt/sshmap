@@ -9,6 +9,7 @@ use std::process::Stdio;
 use std::time::Duration;
 use tokio::process::Command;
 use tokio::time::timeout;
+use uuid::Uuid;
 
 #[derive(Debug, Clone)]
 pub struct OpenSshTransport {
@@ -261,11 +262,12 @@ fn build_evidence_record(
 
 fn control_socket_path(target: &SshTarget) -> PathBuf {
     let socket_name = format!(
-        "sshmap-{}-{}-{}-{}.sock",
+        "sshmap-{}-{}-{}-{}-{}.sock",
         sanitize_path_component(&target.username),
         sanitize_path_component(&target.host),
         target.port,
-        std::process::id()
+        std::process::id(),
+        Uuid::new_v4()
     );
     std::env::temp_dir().join(socket_name)
 }

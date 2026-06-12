@@ -1,5 +1,6 @@
+use crate::target::parse_host_port;
 use crate::transport::SshTarget;
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 
 pub fn parse_proxy_jump_hop(hop: &str, default_username: &str) -> Result<SshTarget> {
     let hop = hop.trim();
@@ -7,26 +8,15 @@ pub fn parse_proxy_jump_hop(hop: &str, default_username: &str) -> Result<SshTarg
         bail!("proxy jump chain contains an empty hop");
     }
 
-    let (user_host, port) = if let Some((host_part, port_str)) = hop.rsplit_once(':') {
-        if host_part.is_empty() {
-            bail!("invalid proxy jump hop: {hop}");
+    let (username, host_port) = match hop.split_once('@') {
+        Some((username, host_port)) if !username.is_empty() && !host_port.is_empty() => {
+            (username.to_string(), host_port)
         }
-        let port = port_str
-            .parse::<u16>()
-            .with_context(|| format!("invalid proxy jump port in hop: {hop}"))?;
-        (host_part, port)
-    } else {
-        (hop, 22)
+        None => (default_username.to_string(), hop),
+        _ => bail!("invalid proxy jump hop: {hop}"),
     };
 
-    let (username, host) = if let Some((username, host)) = user_host.rsplit_once('@') {
-        if username.is_empty() || host.is_empty() {
-            bail!("invalid proxy jump hop: {hop}");
-        }
-        (username.to_string(), host.to_string())
-    } else {
-        (default_username.to_string(), user_host.to_string())
-    };
+    let (host, port) = parse_host_port(host_port)?;
 
     Ok(SshTarget {
         host,
@@ -69,5 +59,28 @@ mod tests {
         assert_eq!(hops[0].host, "jump1.example.com");
         assert_eq!(hops[1].port, 2222);
         assert_eq!(hops[1].username, "jump");
+    }
+
+    #[test]
+    fn parses_bracketed_ipv6_hop_with_port() {
+        let hop = parse_proxy_jump_hop("[2001:db8::1]:2222", "audit").unwrap();
+        assert_eq!(hop.host, "2001:db8::1");
+        assert_eq!(hop.port, 2222);
+        assert_eq!(hop.username, "audit");
+    }
+
+    #[test]
+    fn parses_user_with_bracketed_ipv6_hop() {
+        let hop = parse_proxy_jump_hop("jump@[2001:db8::1]:2222", "audit").unwrap();
+        assert_eq!(hop.host, "2001:db8::1");
+        assert_eq!(hop.port, 2222);
+        assert_eq!(hop.username, "jump");
+    }
+
+    #[test]
+    fn treats_unbracketed_ipv6_as_host_without_port() {
+        let hop = parse_proxy_jump_hop("2001:db8::1", "audit").unwrap();
+        assert_eq!(hop.host, "2001:db8::1");
+        assert_eq!(hop.port, 22);
     }
 }

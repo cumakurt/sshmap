@@ -1,4 +1,5 @@
 use crate::error::SshMapError;
+use crate::target::normalize_scope_target;
 use anyhow::{Context, Result};
 use ipnet::IpNet;
 use std::collections::BTreeSet;
@@ -114,16 +115,18 @@ fn expand_targets(targets: &[String], ports: &[u16]) -> Result<Vec<TargetEndpoin
 }
 
 fn expand_target(target: &str) -> Result<Vec<String>> {
-    if let Ok(ip_net) = target.parse::<IpNet>() {
+    let normalized = normalize_scope_target(target)?;
+
+    if let Ok(ip_net) = normalized.parse::<IpNet>() {
         return Ok(ip_net.hosts().map(|ip| ip.to_string()).collect());
     }
 
-    if target.parse::<IpAddr>().is_ok() {
-        return Ok(vec![target.to_string()]);
+    if normalized.parse::<IpAddr>().is_ok() {
+        return Ok(vec![normalized]);
     }
 
-    if is_valid_hostname_like_value(target) {
-        return Ok(vec![target.to_string()]);
+    if is_valid_hostname_like_value(&normalized) {
+        return Ok(vec![normalized]);
     }
 
     Err(SshMapError::InvalidTarget(target.to_string()).into())
@@ -212,5 +215,12 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert!(enforce_max_targets(endpoints, 2).is_err());
+    }
+
+    #[test]
+    fn expands_bracketed_ipv6_targets() {
+        let endpoints = load_target_endpoints(Some("[2001:db8::1]"), None, "22").unwrap();
+        assert_eq!(endpoints.len(), 1);
+        assert_eq!(endpoints[0].host, "2001:db8::1");
     }
 }

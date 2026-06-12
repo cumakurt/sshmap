@@ -1,5 +1,30 @@
 # Changelog
 
+## 2.0.3
+
+- Add shared IPv6-aware host target parser for imports, discovery scope, and proxy jumps
+- Cap graph path and blast-radius analysis at 100,000 edges on API and CLI
+- Stop overwriting host FQDN with short hostname hints during host updates
+- Validate CLI risk severity and exception expiry timestamps at write time
+- Fix broken GitHub Actions CI workflow (dashboard build and bench jobs)
+- Add core smoke integration tests for host/user/key/graph, serve API, reports, IPv6 imports, and validation
+
+## 2.0.2
+
+- Merge host records when the same target is reached by hostname, FQDN, or IP alias instead of creating duplicate rows
+- Expand evidence redaction for secret assignments while preserving sshd directive lines
+- Include group-based passwordless sudo membership in combined SSH key reuse risk detection
+
+## 2.0.1
+
+- Harden read-only API server: require `--token` on non-loopback binds, constant-time token comparison, generic 500 responses, graph list limit, severity validation, and empty query param checks
+- Fix API summary critical/high counts using database severity totals instead of capped risk lists
+- Escape LIKE wildcards in host and user search queries; skip WAL pragmas on read-only database connections
+- Deduplicate raw evidence before analysis to avoid inflated risk counts from rescans
+- Limit incremental analyze skip to graph-only scope so risk regeneration still runs after policy or exception changes
+- Fix root `authorized_keys` import path, blast-radius passwordless sudo counting, invalid exception expiry handling, and sshd false positive for `StrictHostKeyChecking`
+- Improve native transport: per-command timeouts, proxy-jump session cleanup on failure, bracketed IPv6 hop parsing, and unique OpenSSH control socket paths under concurrency
+
 ## 2.0.0
 
 - Add native transport ProxyJump support via russh direct-tcpip chaining (`--proxy-jump` / `-J`)

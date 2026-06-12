@@ -9,8 +9,10 @@ use axum::{
     response::{Html, IntoResponse, Response},
 };
 use serde::Deserialize;
+use tracing::error;
 
 const API_LIMIT: usize = 10_000;
+const VALID_RISK_SEVERITIES: &[&str] = &["CRITICAL", "HIGH", "MEDIUM", "LOW"];
 
 pub async fn health() -> &'static str {
     "ok"
@@ -18,6 +20,18 @@ pub async fn health() -> &'static str {
 
 pub async fn dashboard() -> Html<&'static str> {
     Html(include_str!("dashboard.html"))
+}
+
+fn constant_time_eq(left: &str, right: &str) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+
+    let mut diff = 0u8;
+    for (left_byte, right_byte) in left.bytes().zip(right.bytes()) {
+        diff |= left_byte ^ right_byte;
+    }
+    diff == 0
 }
 
 pub async fn auth_middleware(
@@ -30,7 +44,7 @@ pub async fn auth_middleware(
             .headers()
             .get("X-SSHMap-Token")
             .and_then(|value| value.to_str().ok())
-            .is_some_and(|value| value == expected);
+            .is_some_and(|value| constant_time_eq(value, expected));
         if !authorized {
             return (StatusCode::UNAUTHORIZED, "invalid or missing API token").into_response();
         }
@@ -158,11 +172,26 @@ pub async fn list_risks(
     State(state): State<AppState>,
     Query(query): Query<RiskListQuery>,
 ) -> Result<Json<Vec<crate::models::RiskRecord>>, ApiError> {
+    let severity = query
+        .severity
+        .map(|value| value.trim().to_ascii_uppercase())
+        .filter(|value| !value.is_empty());
+    if let Some(severity) = &severity
+        && !VALID_RISK_SEVERITIES.contains(&severity.as_str())
+    {
+        return Err(ApiError::bad_request(
+            "severity must be one of CRITICAL, HIGH, MEDIUM, or LOW",
+        ));
+    }
+
     Ok(Json(crate::db::list_risks_read_only(
         &state.db_path,
         &RiskQuery {
-            severity: query.severity.map(|value| value.to_ascii_uppercase()),
-            code: query.code.map(|value| value.to_ascii_uppercase()),
+            severity,
+            code: query
+                .code
+                .map(|value| value.trim().to_ascii_uppercase())
+                .filter(|value| !value.is_empty()),
             limit: query.limit.unwrap_or(100).min(API_LIMIT),
         },
     )?))
@@ -178,10 +207,19 @@ pub async fn get_risk(
     Ok(Json(risk))
 }
 
+#[derive(Debug, Deserialize)]
+pub struct GraphListQuery {
+    pub limit: Option<usize>,
+}
+
 pub async fn list_graph(
     State(state): State<AppState>,
+    Query(query): Query<GraphListQuery>,
 ) -> Result<Json<Vec<crate::models::GraphEdgeRecord>>, ApiError> {
-    Ok(Json(crate::db::list_graph_edges_read_only(&state.db_path)?))
+    Ok(Json(crate::db::list_graph_edges_read_only_limited(
+        &state.db_path,
+        query.limit.unwrap_or(1000).min(API_LIMIT),
+    )?))
 }
 
 #[derive(Debug, Deserialize)]
@@ -194,14 +232,22 @@ pub async fn find_path(
     State(state): State<AppState>,
     Query(query): Query<PathQuery>,
 ) -> Result<Json<crate::models::GraphPathRecord>, ApiError> {
-    let Some(start) = crate::db::resolve_graph_node_ref_read_only(&state.db_path, &query.from)?
-    else {
+    let from = query.from.trim();
+    let to = query.to.trim();
+    if from.is_empty() {
+        return Err(ApiError::bad_request("from parameter is required"));
+    }
+    if to.is_empty() {
+        return Err(ApiError::bad_request("to parameter is required"));
+    }
+
+    let Some(start) = crate::db::resolve_graph_node_ref_read_only(&state.db_path, from)? else {
         return Err(ApiError::not_found("source graph node not found"));
     };
-    let Some(end) = crate::db::resolve_graph_node_ref_read_only(&state.db_path, &query.to)? else {
+    let Some(end) = crate::db::resolve_graph_node_ref_read_only(&state.db_path, to)? else {
         return Err(ApiError::not_found("destination graph node not found"));
     };
-    let edges = crate::db::list_graph_edges_read_only(&state.db_path)?;
+    let edges = crate::db::list_graph_edges_for_analysis(&state.db_path)?;
     Ok(Json(graph::find_path(&edges, start, end)))
 }
 
@@ -214,16 +260,20 @@ pub async fn blast_radius(
     State(state): State<AppState>,
     Query(query): Query<BlastRadiusQuery>,
 ) -> Result<Json<crate::models::BlastRadiusRecord>, ApiError> {
-    let entry_points =
-        crate::db::list_user_nodes_by_username_read_only(&state.db_path, &query.user)?;
+    let username = query.user.trim();
+    if username.is_empty() {
+        return Err(ApiError::bad_request("user parameter is required"));
+    }
+
+    let entry_points = crate::db::list_user_nodes_by_username_read_only(&state.db_path, username)?;
     if entry_points.is_empty() {
         return Err(ApiError::not_found("user not found"));
     }
-    let edges = crate::db::list_graph_edges_read_only(&state.db_path)?;
+    let edges = crate::db::list_graph_edges_for_analysis(&state.db_path)?;
     Ok(Json(graph::compute_blast_radius(
         &edges,
         &entry_points,
-        &query.user,
+        username,
     )))
 }
 
@@ -271,13 +321,21 @@ impl ApiError {
             message: message.to_string(),
         }
     }
+
+    fn bad_request(message: &str) -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            message: message.to_string(),
+        }
+    }
 }
 
 impl From<anyhow::Error> for ApiError {
     fn from(error: anyhow::Error) -> Self {
+        error!(error = ?error, "api request failed");
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
-            message: error.to_string(),
+            message: "internal server error".to_string(),
         }
     }
 }
@@ -290,9 +348,21 @@ impl IntoResponse for ApiError {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
     fn dashboard_html_is_embedded() {
         let html = include_str!("dashboard.html");
         assert!(html.contains("SSHMap Dashboard"));
+    }
+
+    #[test]
+    fn constant_time_eq_rejects_different_lengths() {
+        assert!(!constant_time_eq("short", "longer-value"));
+    }
+
+    #[test]
+    fn constant_time_eq_accepts_matching_values() {
+        assert!(constant_time_eq("secret-token", "secret-token"));
     }
 }

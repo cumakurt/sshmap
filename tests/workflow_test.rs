@@ -77,7 +77,7 @@ fn offline_import_analyze_and_report_workflow() {
     assert!(analyze_text.contains("Risks generated:"));
     assert!(!analyze_text.contains("Risks generated: 0"));
 
-    let incremental_output = run_sshmap(&["analyze", "--incremental", "--db"])
+    let incremental_output = run_sshmap(&["analyze", "--incremental", "--only", "graph", "--db"])
         .arg(&db_path)
         .output()
         .expect("run incremental analyze");

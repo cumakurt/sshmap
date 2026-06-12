@@ -36,6 +36,18 @@ pub async fn run_server(config: ServerConfig) -> Result<()> {
         validate_dashboard_dir(dashboard_dir)?;
     }
 
+    if config.token.is_none() {
+        if !config.listen.ip().is_loopback() {
+            bail!(
+                "--token is required when listening on a non-loopback address ({})",
+                config.listen.ip()
+            );
+        }
+        eprintln!(
+            "Warning: API token authentication is disabled; use only on trusted loopback interfaces."
+        );
+    }
+
     let state = AppState {
         db_path: config.db_path.clone(),
         token: config.token.clone(),
@@ -126,24 +138,7 @@ pub fn build_api_summary(db_path: &std::path::Path) -> Result<ApiSummary> {
     let stats = crate::db::load_database_stats_read_only(db_path)?;
     let hosts = crate::db::list_hosts_read_only(db_path, 10_000)?;
     let reused_keys = crate::db::list_keys_read_only(db_path, 10_000, true)?;
-    let risks = crate::db::list_risks_read_only(
-        db_path,
-        &crate::models::RiskQuery {
-            severity: None,
-            code: None,
-            limit: 10_000,
-        },
-    )?;
-
-    let mut critical_risks = 0;
-    let mut high_risks = 0;
-    for risk in &risks {
-        match risk.severity.as_str() {
-            "CRITICAL" => critical_risks += 1,
-            "HIGH" => high_risks += 1,
-            _ => {}
-        }
-    }
+    let (critical_risks, high_risks) = crate::db::count_open_risks_by_severity_read_only(db_path)?;
 
     Ok(ApiSummary {
         ssh_open_hosts: hosts.iter().filter(|host| host.ssh_open).count(),

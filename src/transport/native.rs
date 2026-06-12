@@ -16,6 +16,15 @@ use tokio::time::timeout;
 
 type ClientHandle = client::Handle<NativeClientHandler>;
 
+async fn disconnect_sessions(sessions: impl IntoIterator<Item = ClientHandle>) {
+    for session in sessions {
+        session
+            .disconnect(Disconnect::ByApplication, "", "English")
+            .await
+            .ok();
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct NativeTransport {
     auth: ScanAuth,
@@ -98,13 +107,27 @@ impl NativeTransport {
                 continue;
             };
 
-            let output = exec_on_session(&mut native_session.session, &rendered_command)
-                .await
-                .unwrap_or_else(|error| CommandOutput {
+            let output = match timeout(
+                self.timeout,
+                exec_on_session(&mut native_session.session, &rendered_command),
+            )
+            .await
+            {
+                Ok(Ok(output)) => output,
+                Ok(Err(error)) => CommandOutput {
                     stdout: String::new(),
                     stderr: error.to_string(),
                     exit_code: None,
-                });
+                },
+                Err(_) => CommandOutput {
+                    stdout: String::new(),
+                    stderr: format!(
+                        "native SSH command timed out after {} seconds",
+                        self.timeout.as_secs()
+                    ),
+                    exit_code: None,
+                },
+            };
             let (content, content_redacted) = redact_sensitive_content(&output.stdout);
             let (stderr, stderr_redacted) = redact_sensitive_content(&output.stderr);
 
@@ -124,12 +147,7 @@ impl NativeTransport {
             .disconnect(Disconnect::ByApplication, "", "English")
             .await
             .ok();
-        for jump_session in native_session.jump_sessions {
-            jump_session
-                .disconnect(Disconnect::ByApplication, "", "English")
-                .await
-                .ok();
-        }
+        disconnect_sessions(native_session.jump_sessions).await;
 
         evidence
     }
@@ -155,12 +173,7 @@ impl NativeTransport {
                 .disconnect(Disconnect::ByApplication, "", "English")
                 .await
                 .ok();
-            for jump_session in native_session.jump_sessions {
-                jump_session
-                    .disconnect(Disconnect::ByApplication, "", "English")
-                    .await
-                    .ok();
-            }
+            disconnect_sessions(native_session.jump_sessions).await;
             Ok(output)
         };
 
@@ -279,20 +292,33 @@ async fn connect_through_proxy_jump(
 
     for hop in hops.iter().skip(1) {
         let previous = parent;
-        parent = connect_over_direct_tcpip(
+        parent = match connect_over_direct_tcpip(
             &previous,
             hop,
             auth,
             config.clone(),
             host_key_policy.clone(),
         )
-        .await?;
+        .await
+        {
+            Ok(next) => next,
+            Err(error) => {
+                disconnect_sessions(std::iter::once(previous).chain(jump_sessions)).await;
+                return Err(error);
+            }
+        };
         jump_sessions.push(previous);
     }
 
     let previous = parent;
     let session =
-        connect_over_direct_tcpip(&previous, target, auth, config, host_key_policy).await?;
+        match connect_over_direct_tcpip(&previous, target, auth, config, host_key_policy).await {
+            Ok(session) => session,
+            Err(error) => {
+                disconnect_sessions(std::iter::once(previous).chain(jump_sessions)).await;
+                return Err(error);
+            }
+        };
     jump_sessions.push(previous);
 
     Ok(NativeSession {

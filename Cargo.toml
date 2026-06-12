@@ -1,6 +1,6 @@
 [package]
 name = "sshmap"
-version = "2.0.0"
+version = "2.0.3"
 edition = "2024"
 description = "Agentless SSH exposure management and access graph CLI"
 license = "MIT"

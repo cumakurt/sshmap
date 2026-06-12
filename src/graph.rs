@@ -211,13 +211,13 @@ pub fn compute_blast_radius(
 
             for edge in adjacency.get(&node).into_iter().flatten() {
                 let next = NodeKey::new(&edge.to_type, edge.to_id);
+                if edge.edge_type == "USER_HAS_PASSWORDLESS_SUDO"
+                    && let Some(record) = labels.get(&next)
+                    && record.node_type == "HOST"
+                {
+                    passwordless_sudo_hosts.insert(next.clone(), record.clone());
+                }
                 if visited.insert(next.clone()) {
-                    if edge.edge_type == "USER_HAS_PASSWORDLESS_SUDO"
-                        && let Some(record) = labels.get(&next)
-                        && record.node_type == "HOST"
-                    {
-                        passwordless_sudo_hosts.insert(next.clone(), record.clone());
-                    }
                     queue.push_back(next);
                 }
             }
@@ -514,6 +514,49 @@ mod tests {
 
         assert_eq!(blast_radius.host_count, 1);
         assert_eq!(blast_radius.entry_points.len(), 1);
+    }
+
+    #[test]
+    fn counts_passwordless_sudo_when_reached_by_alternate_path_first() {
+        let mut edges = vec![
+            GraphEdgeRecord {
+                id: 1,
+                from_type: "USER".to_string(),
+                from_id: 2,
+                from_label: "deploy@web01".to_string(),
+                to_type: "HOST".to_string(),
+                to_id: 3,
+                to_label: "web01".to_string(),
+                edge_type: "USER_ON_HOST".to_string(),
+                weight: 1,
+                confidence: "HIGH".to_string(),
+                evidence: None,
+            },
+            GraphEdgeRecord {
+                id: 2,
+                from_type: "USER".to_string(),
+                from_id: 2,
+                from_label: "deploy@web01".to_string(),
+                to_type: "HOST".to_string(),
+                to_id: 3,
+                to_label: "web01".to_string(),
+                edge_type: "USER_HAS_PASSWORDLESS_SUDO".to_string(),
+                weight: 1,
+                confidence: "HIGH".to_string(),
+                evidence: None,
+            },
+        ];
+        let entry_points = vec![GraphNodeRecord {
+            node_type: "USER".to_string(),
+            node_id: 2,
+            label: "deploy@web01".to_string(),
+        }];
+        let blast_radius = compute_blast_radius(&edges, &entry_points, "deploy");
+
+        assert_eq!(blast_radius.passwordless_sudo_host_count, 1);
+        edges.reverse();
+        let blast_radius = compute_blast_radius(&edges, &entry_points, "deploy");
+        assert_eq!(blast_radius.passwordless_sudo_host_count, 1);
     }
 
     fn public_key_to_user_edge(id: i64) -> GraphEdgeRecord {

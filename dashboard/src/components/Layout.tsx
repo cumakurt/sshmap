@@ -41,6 +41,20 @@ export function Layout({ summaryLine, error }: { summaryLine: string; error: str
         {error ? <div className="error">{error}</div> : null}
         <Outlet />
       </main>
+      <footer className="app-footer">
+        <span>
+          SSHMap — GPL-3.0-or-later —{" "}
+          <a href="mailto:cumakurt@gmail.com">cumakurt@gmail.com</a>
+          {" · "}
+          <a href="https://www.linkedin.com/in/cuma-kurt-34414917/" target="_blank" rel="noreferrer">
+            LinkedIn
+          </a>
+          {" · "}
+          <a href="https://github.com/cumakurt/sshmap" target="_blank" rel="noreferrer">
+            GitHub
+          </a>
+        </span>
+      </footer>
     </>
   );
 }

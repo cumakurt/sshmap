@@ -1,7 +1,9 @@
+mod about;
 mod analyzer;
 mod baseline;
 mod bench;
 mod cli;
+mod cli_help;
 mod collector;
 mod config;
 mod db;
@@ -30,6 +32,13 @@ use tracing_subscriber::{EnvFilter, fmt};
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    if std::env::args().len() == 1 {
+        use clap::CommandFactory;
+        let mut command = Cli::command();
+        command.print_long_help()?;
+        return Ok(());
+    }
+
     let cli = Cli::parse();
     init_tracing(cli.verbose);
     let app_config = config::load_optional(cli.config.as_deref())?;

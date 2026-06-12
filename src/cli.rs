@@ -3,23 +3,37 @@ use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, ValueEnum, Default)]
 pub enum AnalyzeOnlyScope {
+    /// Parse evidence, generate risks, and rebuild the graph (default)
     #[default]
     All,
+    /// Regenerate risk findings only (skip graph rebuild)
     Risks,
+    /// Rebuild access graph edges only (skip risk regeneration)
     Graph,
 }
 
 #[derive(Debug, Parser)]
-#[command(name = "sshmap")]
-#[command(about = "Agentless SSH exposure management and access graph CLI")]
-#[command(version)]
+#[command(
+    name = "sshmap",
+    about = "Agentless SSH exposure management and access graph CLI",
+    long_about = crate::about::LONG_ABOUT,
+    after_help = crate::cli_help::ROOT_AFTER_HELP,
+    author = "Cuma Kurt <cumakurt@gmail.com>",
+    version,
+    arg_required_else_help = true,
+    subcommand_help_heading = "COMMANDS",
+    disable_help_subcommand = false
+)]
 pub struct Cli {
+    /// Enable verbose logging (RUST_LOG-style diagnostics on stderr)
     #[arg(short, long, global = true)]
     pub verbose: bool,
 
+    /// YAML configuration file (scan, discover, serve, and database defaults)
     #[arg(long, global = true, value_name = "PATH")]
     pub config: Option<PathBuf>,
 
+    /// YAML risk policy file (disable rules or tune severity thresholds)
     #[arg(long, global = true, value_name = "PATH")]
     pub risk_policy: Option<PathBuf>,
 
@@ -29,305 +43,425 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Create a new SQLite inventory database
+    #[command(long_about = crate::cli_help::INIT_LONG)]
     Init(InitArgs),
+
+    /// Validate local runtime requirements before scans
+    #[command(long_about = crate::cli_help::DOCTOR_LONG)]
     Doctor(DoctorArgs),
+
+    /// Database statistics and schema migrations
+    #[command(long_about = crate::cli_help::DB_LONG)]
     Db {
         #[command(subcommand)]
         command: DbCommand,
     },
+
+    /// TCP SSH discovery without authentication
+    #[command(long_about = crate::cli_help::DISCOVER_LONG)]
     Discover(DiscoverArgs),
+
+    /// Authenticated read-only remote evidence collection
+    #[command(long_about = crate::cli_help::SCAN_LONG)]
     Scan(ScanArgs),
+
+    /// Read-only audit of the local host (no SSH)
+    #[command(long_about = crate::cli_help::LOCAL_SCAN_LONG)]
     LocalScan(LocalScanArgs),
+
+    /// Parse evidence, generate risks, and rebuild the graph
+    #[command(long_about = crate::cli_help::ANALYZE_LONG)]
     Analyze(AnalyzeArgs),
+
+    /// List and inspect SSH exposure findings
+    #[command(long_about = crate::cli_help::RISKS_LONG)]
     Risks {
         #[command(subcommand)]
         command: RisksCommand,
     },
+
+    /// Browse host inventory and host-scoped details
+    #[command(long_about = crate::cli_help::HOST_LONG)]
     Host {
         #[command(subcommand)]
         command: HostCommand,
     },
+
+    /// Browse SSH user identities across hosts
+    #[command(long_about = crate::cli_help::USER_LONG)]
     User {
         #[command(subcommand)]
         command: UserCommand,
     },
+
+    /// Browse public keys and key reuse patterns
+    #[command(long_about = crate::cli_help::KEYS_LONG)]
     Keys {
         #[command(subcommand)]
         command: KeysCommand,
     },
+
+    /// Generate HTML, JSON, or CSV assessment reports
+    #[command(long_about = crate::cli_help::REPORT_LONG)]
     Report {
         #[command(subcommand)]
         command: ReportCommand,
     },
+
+    /// Snapshot current risks for drift tracking
+    #[command(long_about = crate::cli_help::BASELINE_LONG)]
     Baseline {
         #[command(subcommand)]
         command: BaselineCommand,
     },
+
+    /// Compare baselines or baseline vs current risks
+    #[command(long_about = crate::cli_help::DIFF_LONG)]
     Diff(DiffArgs),
+
+    /// Export the SSH access graph
+    #[command(long_about = crate::cli_help::GRAPH_LONG)]
     Graph {
         #[command(subcommand)]
         command: GraphCommand,
     },
+
+    /// Find shortest directed path between graph nodes
+    #[command(long_about = crate::cli_help::PATH_LONG)]
     Path(PathArgs),
+
+    /// Measure lateral reach from a username
+    #[command(long_about = crate::cli_help::BLAST_RADIUS_LONG)]
     BlastRadius(BlastRadiusArgs),
+
+    /// Import inventory or evidence files offline
+    #[command(long_about = crate::cli_help::IMPORT_LONG)]
     Import {
         #[command(subcommand)]
         command: ImportCommand,
     },
+
+    /// Read-only REST API and web dashboard
+    #[command(long_about = crate::cli_help::SERVE_LONG)]
     Serve(ServeArgs),
+
+    /// Suppress accepted findings during analysis
+    #[command(long_about = crate::cli_help::EXCEPTIONS_LONG)]
     Exceptions {
         #[command(subcommand)]
         command: ExceptionsCommand,
     },
+
+    /// Export JSON or CSV slices for automation
+    #[command(long_about = crate::cli_help::EXPORT_LONG)]
     Export {
         #[command(subcommand)]
         command: ExportCommand,
     },
+
+    /// Performance benchmarks and CI regression checks
+    #[command(long_about = crate::cli_help::BENCH_LONG)]
     Bench(BenchArgs),
+
+    /// Generate bash or zsh shell completion scripts
+    #[command(long_about = crate::cli_help::COMPLETION_LONG)]
     Completion(CompletionArgs),
 }
 
 #[derive(Debug, Args)]
 pub struct InitArgs {
-    #[arg(long, default_value = "sshmap.db")]
+    /// SQLite database path to create
+    #[arg(long, default_value = "sshmap.db", help = "SQLite database file path")]
     pub db: PathBuf,
 }
 
 #[derive(Debug, Args)]
 pub struct DoctorArgs {
+    /// Optional database path to include database-specific checks
     #[arg(long, value_name = "PATH")]
     pub db: Option<PathBuf>,
 
+    /// Optional YAML config to validate scan and transport settings
     #[arg(long, value_name = "PATH")]
     pub config: Option<PathBuf>,
 
+    /// Optional target scope file to verify readability
     #[arg(long, value_name = "PATH")]
     pub scope: Option<PathBuf>,
 }
 
 #[derive(Debug, Subcommand)]
 pub enum DbCommand {
+    /// Print row counts and schema metadata
     Stats(DbStatsArgs),
+    /// Apply pending schema migrations
     Migrate(DbMigrateArgs),
 }
 
 #[derive(Debug, Args)]
 pub struct DbStatsArgs {
-    #[arg(long, default_value = "sshmap.db")]
+    #[arg(long, default_value = "sshmap.db", help = "SQLite database file path")]
     pub db: PathBuf,
 
+    /// Output statistics as JSON instead of plain text
     #[arg(long)]
     pub json: bool,
 }
 
 #[derive(Debug, Args)]
 pub struct DbMigrateArgs {
-    #[arg(long, default_value = "sshmap.db")]
+    #[arg(long, default_value = "sshmap.db", help = "SQLite database file path")]
     pub db: PathBuf,
 }
 
 #[derive(Debug, Args)]
 pub struct DiscoverArgs {
-    #[arg(long, conflicts_with = "file")]
+    /// Comma-separated targets: IPs, CIDRs, or hostnames
+    #[arg(long, conflicts_with = "file", help = "Inline target list")]
     pub targets: Option<String>,
 
+    /// File with one target per line (comments with # supported)
     #[arg(long, value_name = "PATH", conflicts_with = "targets")]
     pub file: Option<PathBuf>,
 
+    /// Comma-separated TCP ports to probe (default: 22)
     #[arg(long, default_value = "22")]
     pub ports: String,
 
+    /// Maximum concurrent TCP probes
     #[arg(long, default_value_t = 100)]
     pub concurrency: usize,
 
+    /// Per-target TCP timeout in seconds
     #[arg(long, default_value_t = 3)]
     pub timeout: u64,
 
+    /// Print progress while discovery runs
     #[arg(long)]
     pub progress: bool,
 
+    /// Maximum number of expanded targets allowed (safety cap)
     #[arg(long)]
     pub max_targets: Option<usize>,
 
-    #[arg(long, default_value = "sshmap.db")]
+    #[arg(long, default_value = "sshmap.db", help = "SQLite database file path")]
     pub db: PathBuf,
 }
 
 #[derive(Debug, Args)]
 pub struct ScanArgs {
-    #[arg(long, conflicts_with = "file")]
+    /// Comma-separated targets: IPs, CIDRs, or hostnames
+    #[arg(long, conflicts_with = "file", help = "Inline target list")]
     pub targets: Option<String>,
 
+    /// File with one target per line
     #[arg(long, value_name = "PATH", conflicts_with = "targets")]
     pub file: Option<PathBuf>,
 
-    #[arg(long)]
+    /// SSH username for authenticated collection
+    #[arg(long, help = "Remote SSH username (required unless set in config)")]
     pub user: Option<String>,
 
+    /// Path to SSH private key used for authentication
     #[arg(long, value_name = "PATH")]
     pub key: Option<PathBuf>,
 
-    /// Authenticate with keys loaded in the local SSH agent.
+    /// Authenticate with keys loaded in the local SSH agent
     #[arg(long)]
     pub agent: bool,
 
-    /// SSH agent socket path (default: SSH_AUTH_SOCK).
+    /// SSH agent socket path (default: SSH_AUTH_SOCK environment variable)
     #[arg(long, value_name = "PATH")]
     pub identity_agent: Option<PathBuf>,
 
-    /// Restrict authentication to --key only (OpenSSH IdentitiesOnly=yes).
+    /// Restrict authentication to --key only (OpenSSH IdentitiesOnly=yes)
     #[arg(long)]
     pub identities_only: bool,
 
-    /// Allow SSH agent keys in addition to --key when both are configured.
+    /// Allow SSH agent keys in addition to --key when both are configured
     #[arg(long, conflicts_with = "identities_only")]
     pub no_identities_only: bool,
 
-    #[arg(long)]
+    /// Prefix root-readable commands with non-interactive sudo
+    #[arg(long, help = "Use sudo for commands that read protected system files")]
     pub sudo: bool,
 
+    /// Comma-separated SSH ports (default: 22)
     #[arg(long, default_value = "22")]
     pub ports: String,
 
+    /// Maximum concurrent host scans
     #[arg(long, default_value_t = 20)]
     pub concurrency: usize,
 
+    /// Per-host operation timeout in seconds
     #[arg(long, default_value_t = 10)]
     pub timeout: u64,
 
+    /// Print progress while the scan runs
     #[arg(long)]
     pub progress: bool,
 
+    /// Maximum number of expanded targets allowed
     #[arg(long)]
     pub max_targets: Option<usize>,
 
+    /// SSH client backend: openssh (system ssh) or native (in-process russh)
     #[arg(long, default_value = "openssh", value_name = "openssh|native")]
     pub transport: String,
 
+    /// Host key verification policy: yes, no, or accept-new
     #[arg(long, value_name = "yes|no|accept-new", default_value = "accept-new")]
     pub strict_host_key: String,
 
+    /// Known hosts file for strict host key checking
     #[arg(long, value_name = "PATH")]
     pub known_hosts: Option<PathBuf>,
 
-    /// Disable OpenSSH ControlMaster connection reuse (one SSH session per command).
+    /// Disable OpenSSH ControlMaster connection reuse (one session per command)
     #[arg(long)]
     pub no_connection_reuse: bool,
 
-    /// OpenSSH ProxyJump target (`-J`), comma-separated for multiple hops.
+    /// Bastion chain for OpenSSH ProxyJump (-J); comma-separated for multiple hops
     #[arg(long, short = 'J', value_name = "HOST")]
     pub proxy_jump: Option<String>,
 
-    #[arg(long, default_value = "sshmap.db")]
+    #[arg(long, default_value = "sshmap.db", help = "SQLite database file path")]
     pub db: PathBuf,
 }
 
 #[derive(Debug, Args)]
 pub struct LocalScanArgs {
-    #[arg(long)]
+    /// Prefix root-readable commands with non-interactive sudo
+    #[arg(long, help = "Use sudo for commands that read protected system files")]
     pub sudo: bool,
 
-    #[arg(long, default_value = "sshmap.db")]
+    #[arg(long, default_value = "sshmap.db", help = "SQLite database file path")]
     pub db: PathBuf,
 }
 
 #[derive(Debug, Args)]
 pub struct AnalyzeArgs {
-    #[arg(long, default_value = "sshmap.db")]
+    #[arg(long, default_value = "sshmap.db", help = "SQLite database file path")]
     pub db: PathBuf,
 
+    /// Limit analysis to risks only, graph only, or both (default: all)
     #[arg(long, value_enum, default_value_t = AnalyzeOnlyScope::All)]
     pub only: AnalyzeOnlyScope,
 
-    #[arg(long)]
+    /// Skip graph rebuild when no new evidence exists since the last run (use with --only graph)
+    #[arg(
+        long,
+        help = "Skip analysis when no new raw evidence exists (graph scope only)"
+    )]
     pub incremental: bool,
 }
 
 #[derive(Debug, Subcommand)]
 pub enum RisksCommand {
+    /// List findings with optional severity or code filters
     List(RiskListArgs),
+    /// Show one finding with evidence and remediation text
     Show(RiskShowArgs),
 }
 
 #[derive(Debug, Args)]
 pub struct RiskListArgs {
-    #[arg(long)]
+    /// Filter by severity: CRITICAL, HIGH, MEDIUM, or LOW
+    #[arg(long, value_name = "LEVEL")]
     pub severity: Option<String>,
 
-    #[arg(long)]
+    /// Filter by exact risk code (e.g. SSH_PASSWORD_AUTH_ENABLED)
+    #[arg(long, value_name = "CODE")]
     pub code: Option<String>,
 
+    /// Maximum number of rows to return
     #[arg(long, default_value_t = 100)]
     pub limit: usize,
 
+    /// Output findings as JSON
     #[arg(long)]
     pub json: bool,
 
-    #[arg(long, default_value = "sshmap.db")]
+    #[arg(long, default_value = "sshmap.db", help = "SQLite database file path")]
     pub db: PathBuf,
 }
 
 #[derive(Debug, Args)]
 pub struct RiskShowArgs {
+    /// Numeric risk ID from risks list
     pub id: i64,
 
+    /// Output finding detail as JSON
     #[arg(long)]
     pub json: bool,
 
-    #[arg(long, default_value = "sshmap.db")]
+    #[arg(long, default_value = "sshmap.db", help = "SQLite database file path")]
     pub db: PathBuf,
 }
 
 #[derive(Debug, Subcommand)]
 pub enum HostCommand {
+    /// List hosts with SSH state and risk counts
     List(InventoryListArgs),
+    /// Show one host with users and linked risks
     Show(InventoryShowArgs),
 }
 
 #[derive(Debug, Subcommand)]
 pub enum UserCommand {
+    /// List usernames with host and key counts
     List(InventoryListArgs),
+    /// Show accounts, keys, sudo rules, and risks for one username
     Show(UserShowArgs),
 }
 
 #[derive(Debug, Subcommand)]
 pub enum KeysCommand {
+    /// List public keys with usage counts
     List(KeyListArgs),
+    /// List keys reused across multiple hosts or users
     Reuse(KeyReuseArgs),
+    /// Show key locations and linked risks
     Show(KeyShowArgs),
 }
 
 #[derive(Debug, Args)]
 pub struct InventoryListArgs {
+    /// Maximum number of rows to return
     #[arg(long, default_value_t = 100)]
     pub limit: usize,
 
+    /// Output as JSON
     #[arg(long)]
     pub json: bool,
 
-    #[arg(long, default_value = "sshmap.db")]
+    #[arg(long, default_value = "sshmap.db", help = "SQLite database file path")]
     pub db: PathBuf,
 }
 
 #[derive(Debug, Args)]
 pub struct InventoryShowArgs {
+    /// Host ID, hostname, FQDN, or IP address
     pub target: String,
 
     #[arg(long)]
     pub json: bool,
 
-    #[arg(long, default_value = "sshmap.db")]
+    #[arg(long, default_value = "sshmap.db", help = "SQLite database file path")]
     pub db: PathBuf,
 }
 
 #[derive(Debug, Args)]
 pub struct UserShowArgs {
+    /// Username to inspect across all hosts
     pub username: String,
 
     #[arg(long)]
     pub json: bool,
 
-    #[arg(long, default_value = "sshmap.db")]
+    #[arg(long, default_value = "sshmap.db", help = "SQLite database file path")]
     pub db: PathBuf,
 }
 
@@ -339,7 +473,7 @@ pub struct KeyListArgs {
     #[arg(long)]
     pub json: bool,
 
-    #[arg(long, default_value = "sshmap.db")]
+    #[arg(long, default_value = "sshmap.db", help = "SQLite database file path")]
     pub db: PathBuf,
 }
 
@@ -351,53 +485,60 @@ pub struct KeyReuseArgs {
     #[arg(long)]
     pub json: bool,
 
-    #[arg(long, default_value = "sshmap.db")]
+    #[arg(long, default_value = "sshmap.db", help = "SQLite database file path")]
     pub db: PathBuf,
 }
 
 #[derive(Debug, Args)]
 pub struct KeyShowArgs {
+    /// Numeric key ID or SHA256 fingerprint (key:SHA256:...)
     pub target: String,
 
     #[arg(long)]
     pub json: bool,
 
-    #[arg(long, default_value = "sshmap.db")]
+    #[arg(long, default_value = "sshmap.db", help = "SQLite database file path")]
     pub db: PathBuf,
 }
 
 #[derive(Debug, Subcommand)]
 pub enum ReportCommand {
+    /// Write a report file in the selected format
     Create(ReportCreateArgs),
 }
 
 #[derive(Debug, Args)]
 pub struct ReportCreateArgs {
+    /// Output format: json, html, or csv
     #[arg(long, default_value = "html")]
     pub format: String,
 
+    /// Output file path (directory for csv format)
     #[arg(long, value_name = "PATH")]
     pub output: PathBuf,
 
-    #[arg(long, default_value = "sshmap.db")]
+    #[arg(long, default_value = "sshmap.db", help = "SQLite database file path")]
     pub db: PathBuf,
 }
 
 #[derive(Debug, Subcommand)]
 pub enum BaselineCommand {
+    /// Save a named risk snapshot
     Create(BaselineCreateArgs),
+    /// List saved baselines
     List(BaselineListArgs),
 }
 
 #[derive(Debug, Args)]
 pub struct BaselineCreateArgs {
+    /// Unique baseline name (e.g. 2026-q1-audit)
     #[arg(long)]
     pub name: String,
 
     #[arg(long)]
     pub json: bool,
 
-    #[arg(long, default_value = "sshmap.db")]
+    #[arg(long, default_value = "sshmap.db", help = "SQLite database file path")]
     pub db: PathBuf,
 }
 
@@ -406,88 +547,105 @@ pub struct BaselineListArgs {
     #[arg(long)]
     pub json: bool,
 
-    #[arg(long, default_value = "sshmap.db")]
+    #[arg(long, default_value = "sshmap.db", help = "SQLite database file path")]
     pub db: PathBuf,
 }
 
 #[derive(Debug, Args)]
 pub struct DiffArgs {
+    /// Source baseline name
     #[arg(long)]
     pub from: String,
 
+    /// Destination baseline name or 'latest' for current risks
     #[arg(long, default_value = "latest")]
     pub to: String,
 
     #[arg(long)]
     pub json: bool,
 
-    #[arg(long, default_value = "sshmap.db")]
+    #[arg(long, default_value = "sshmap.db", help = "SQLite database file path")]
     pub db: PathBuf,
 }
 
 #[derive(Debug, Subcommand)]
 pub enum GraphCommand {
+    /// Write graph edges to a file
     Export(GraphExportArgs),
 }
 
 #[derive(Debug, Args)]
 pub struct GraphExportArgs {
+    /// Export format: json, dot, or cytoscape
     #[arg(long, default_value = "json")]
     pub format: String,
 
+    /// Output file path
     #[arg(long, value_name = "PATH")]
     pub output: PathBuf,
 
-    #[arg(long, default_value = "sshmap.db")]
+    #[arg(long, default_value = "sshmap.db", help = "SQLite database file path")]
     pub db: PathBuf,
 }
 
 #[derive(Debug, Args)]
 pub struct PathArgs {
+    /// Source graph node (e.g. user:deploy@web01, key:SHA256:...)
     #[arg(long)]
     pub from: String,
 
+    /// Destination graph node (e.g. host:web02)
     #[arg(long)]
     pub to: String,
 
     #[arg(long)]
     pub json: bool,
 
-    #[arg(long, default_value = "sshmap.db")]
+    #[arg(long, default_value = "sshmap.db", help = "SQLite database file path")]
     pub db: PathBuf,
 }
 
 #[derive(Debug, Args)]
 pub struct BlastRadiusArgs {
+    /// Username to measure reach for across all host-local accounts
     #[arg(long)]
     pub user: String,
 
     #[arg(long)]
     pub json: bool,
 
-    #[arg(long, default_value = "sshmap.db")]
+    #[arg(long, default_value = "sshmap.db", help = "SQLite database file path")]
     pub db: PathBuf,
 }
 
 #[derive(Debug, Subcommand)]
 pub enum ImportCommand {
+    /// Import hosts from an Ansible INI inventory file
     Ansible(ImportFileArgs),
+    /// Import SSH hosts from Nmap XML output
     Nmap(ImportFileArgs),
+    /// Import hosts from a CSV file with optional column mapping
     Csv(ImportCsvArgs),
+    /// Import known_hosts trust relationships
     KnownHosts(ImportFileArgs),
+    /// Import SSH client config evidence for a host
     SshConfig(ImportHostFileArgs),
+    /// Import sshd_config evidence for a host
     SshdConfig(ImportHostFileArgs),
+    /// Import authorized_keys evidence for a user on a host
     AuthorizedKeys(ImportAuthorizedKeysArgs),
+    /// Import sudoers evidence for a host
     Sudoers(ImportHostFileArgs),
+    /// Import host inventory from a prior SSHMap JSON report
     Json(ImportFileArgs),
 }
 
 #[derive(Debug, Args)]
 pub struct ImportFileArgs {
-    #[arg(long, value_name = "PATH")]
+    #[arg(long, value_name = "PATH", help = "Input file to import")]
     pub file: PathBuf,
 
-    #[arg(long, default_value = "sshmap.db")]
+    #[arg(long, default_value = "sshmap.db", help = "SQLite database file path")]
     pub db: PathBuf,
 }
 
@@ -496,10 +654,11 @@ pub struct ImportCsvArgs {
     #[arg(long, value_name = "PATH")]
     pub file: PathBuf,
 
+    /// Optional YAML/JSON column mapping file
     #[arg(long, value_name = "PATH")]
     pub mapping: Option<PathBuf>,
 
-    #[arg(long, default_value = "sshmap.db")]
+    #[arg(long, default_value = "sshmap.db", help = "SQLite database file path")]
     pub db: PathBuf,
 }
 
@@ -508,10 +667,11 @@ pub struct ImportHostFileArgs {
     #[arg(long, value_name = "PATH")]
     pub file: PathBuf,
 
+    /// Target host identifier (hostname, IP, or bracketed IPv6 with port)
     #[arg(long)]
     pub host: String,
 
-    #[arg(long, default_value = "sshmap.db")]
+    #[arg(long, default_value = "sshmap.db", help = "SQLite database file path")]
     pub db: PathBuf,
 }
 
@@ -520,42 +680,49 @@ pub struct ImportAuthorizedKeysArgs {
     #[arg(long, value_name = "PATH")]
     pub file: PathBuf,
 
-    #[arg(long)]
+    #[arg(long, help = "Host that owns the authorized_keys file")]
     pub host: String,
 
-    #[arg(long)]
+    #[arg(long, help = "Unix username for the authorized_keys entry")]
     pub user: String,
 
-    #[arg(long, default_value = "sshmap.db")]
+    #[arg(long, default_value = "sshmap.db", help = "SQLite database file path")]
     pub db: PathBuf,
 }
 
 #[derive(Debug, Args)]
 pub struct ServeArgs {
-    #[arg(long, default_value = "sshmap.db")]
+    #[arg(long, default_value = "sshmap.db", help = "SQLite database file path")]
     pub db: PathBuf,
 
+    /// Socket address to bind (e.g. 127.0.0.1:8080)
     #[arg(long, default_value = "127.0.0.1:8080")]
     pub listen: String,
 
-    #[arg(long, default_value_t = true)]
-    pub read_only: bool,
-
-    #[arg(long, help = "Require X-SSHMap-Token header for API requests")]
-    pub token: Option<String>,
-
+    /// Open the database with SQLite read-only flags (required)
     #[arg(
         long,
-        value_name = "DIR",
-        help = "Serve a built React dashboard from DIR"
+        default_value_t = true,
+        help = "Open database read-only (required)"
     )]
+    pub read_only: bool,
+
+    /// API token sent via X-SSHMap-Token header (required on non-loopback binds)
+    #[arg(long, help = "Require X-SSHMap-Token header for /api/* routes")]
+    pub token: Option<String>,
+
+    /// Directory containing a built React dashboard (index.html + assets)
+    #[arg(long, value_name = "DIR")]
     pub dashboard: Option<PathBuf>,
 }
 
 #[derive(Debug, Subcommand)]
 pub enum ExceptionsCommand {
+    /// List configured risk exceptions
     List(ExceptionListArgs),
+    /// Add an exception to suppress matching findings
     Add(ExceptionAddArgs),
+    /// Remove an exception by ID
     Remove(ExceptionRemoveArgs),
 }
 
@@ -564,84 +731,102 @@ pub struct ExceptionListArgs {
     #[arg(long)]
     pub json: bool,
 
-    #[arg(long, default_value = "sshmap.db")]
+    #[arg(long, default_value = "sshmap.db", help = "SQLite database file path")]
     pub db: PathBuf,
 }
 
 #[derive(Debug, Args)]
 pub struct ExceptionAddArgs {
-    #[arg(long)]
+    /// Risk code to suppress (e.g. SSH_PASSWORD_AUTH_ENABLED)
+    #[arg(long, value_name = "CODE")]
     pub code: String,
 
+    /// Human-readable justification for the exception
     #[arg(long)]
     pub reason: String,
 
+    /// Limit exception to a specific host database ID
     #[arg(long)]
     pub host_id: Option<i64>,
 
+    /// Limit exception to a specific username
     #[arg(long)]
     pub username: Option<String>,
 
-    #[arg(long)]
+    /// Limit exception to a specific public key fingerprint
+    #[arg(long, value_name = "SHA256")]
     pub fingerprint: Option<String>,
 
-    #[arg(long)]
+    /// Optional expiry timestamp in RFC3339 format
+    #[arg(long, value_name = "RFC3339")]
     pub expires_at: Option<String>,
 
     #[arg(long)]
     pub json: bool,
 
-    #[arg(long, default_value = "sshmap.db")]
+    #[arg(long, default_value = "sshmap.db", help = "SQLite database file path")]
     pub db: PathBuf,
 }
 
 #[derive(Debug, Args)]
 pub struct ExceptionRemoveArgs {
+    /// Exception row ID from exceptions list
     pub id: i64,
 
-    #[arg(long, default_value = "sshmap.db")]
+    #[arg(long, default_value = "sshmap.db", help = "SQLite database file path")]
     pub db: PathBuf,
 }
 
 #[derive(Debug, Args)]
 pub struct CompletionArgs {
+    /// Shell to generate completions for
     #[arg(long, value_enum)]
     pub shell: clap_complete::Shell,
 }
 
 #[derive(Debug, Subcommand)]
 pub enum ExportCommand {
+    /// Export inventory summary totals as JSON
     Summary(ExportSummaryArgs),
+    /// Export risk findings as JSON or NDJSON
     Risks(ExportRisksArgs),
+    /// Export host inventory as JSON or CSV
     Hosts(ExportHostsArgs),
+    /// Export known_hosts entries as JSON or CSV
     KnownHosts(ExportKnownHostsArgs),
+    /// Export SSH client config entries as JSON or CSV
     SshConfig(ExportSshConfigArgs),
 }
 
 #[derive(Debug, Args)]
 pub struct ExportSummaryArgs {
-    #[arg(long, default_value = "sshmap.db")]
+    #[arg(long, default_value = "sshmap.db", help = "SQLite database file path")]
     pub db: PathBuf,
 
-    #[arg(long, value_name = "PATH")]
+    #[arg(
+        long,
+        value_name = "PATH",
+        help = "Write JSON to file instead of stdout"
+    )]
     pub output: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]
 pub struct ExportRisksArgs {
+    /// Output format: json or ndjson
     #[arg(long, default_value = "json")]
     pub format: String,
 
-    #[arg(long)]
+    #[arg(long, value_name = "LEVEL")]
     pub severity: Option<String>,
 
-    #[arg(long)]
+    #[arg(long, value_name = "CODE")]
     pub code: Option<String>,
 
     #[arg(long, default_value_t = 10_000)]
     pub limit: usize,
 
-    #[arg(long, default_value = "sshmap.db")]
+    #[arg(long, default_value = "sshmap.db", help = "SQLite database file path")]
     pub db: PathBuf,
 
     #[arg(long, value_name = "PATH")]
@@ -656,7 +841,7 @@ pub struct ExportHostsArgs {
     #[arg(long, default_value_t = 10_000)]
     pub limit: usize,
 
-    #[arg(long, default_value = "sshmap.db")]
+    #[arg(long, default_value = "sshmap.db", help = "SQLite database file path")]
     pub db: PathBuf,
 
     #[arg(long, value_name = "PATH")]
@@ -671,7 +856,7 @@ pub struct ExportKnownHostsArgs {
     #[arg(long, default_value_t = 10_000)]
     pub limit: usize,
 
-    #[arg(long, default_value = "sshmap.db")]
+    #[arg(long, default_value = "sshmap.db", help = "SQLite database file path")]
     pub db: PathBuf,
 
     #[arg(long, value_name = "PATH")]
@@ -686,7 +871,7 @@ pub struct ExportSshConfigArgs {
     #[arg(long, default_value_t = 10_000)]
     pub limit: usize,
 
-    #[arg(long, default_value = "sshmap.db")]
+    #[arg(long, default_value = "sshmap.db", help = "SQLite database file path")]
     pub db: PathBuf,
 
     #[arg(long, value_name = "PATH")]
@@ -695,29 +880,31 @@ pub struct ExportSshConfigArgs {
 
 #[derive(Debug, Args)]
 pub struct BenchArgs {
-    #[arg(long, default_value = "sshmap.db")]
+    #[arg(long, default_value = "sshmap.db", help = "SQLite database file path")]
     pub db: PathBuf,
 
+    /// Number of hosts to seed when --seed is used
     #[arg(long, default_value_t = crate::bench::default_host_count())]
     pub hosts: usize,
 
+    /// Repetitions per benchmark operation
     #[arg(long, default_value_t = crate::bench::default_iterations())]
     pub iterations: u32,
 
-    #[arg(long, help = "Recreate the benchmark database before running")]
+    /// Recreate benchmark data before running timings
+    #[arg(long)]
     pub seed: bool,
 
+    /// Output timing report as JSON
     #[arg(long)]
     pub json: bool,
 
+    /// JSON file with max timing thresholds for CI validation
     #[arg(long, value_name = "PATH")]
     pub thresholds: Option<PathBuf>,
 
-    #[arg(
-        long,
-        value_name = "PATH",
-        help = "Compare results against a previous JSON benchmark report"
-    )]
+    /// Prior JSON benchmark report for trend regression comparison
+    #[arg(long, value_name = "PATH")]
     pub baseline: Option<PathBuf>,
 }
 
@@ -757,4 +944,42 @@ pub fn run_doctor(
         println!("{}: {}", check.label, check.status);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod cli_help_tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn root_help_lists_all_commands() {
+        let mut command = Cli::command();
+        let help = command.render_help().to_string();
+        let long_help = command.render_long_help().to_string();
+        for keyword in [
+            "discover",
+            "scan",
+            "analyze",
+            "serve",
+            "COMMANDS",
+            "WORKFLOW",
+            "--verbose",
+        ] {
+            assert!(help.contains(keyword), "missing {keyword} in root help");
+        }
+        assert!(long_help.contains("Cuma Kurt"));
+    }
+
+    #[test]
+    fn scan_help_documents_transport_flags() {
+        let mut command = Cli::command();
+        let help = command
+            .find_subcommand_mut("scan")
+            .expect("scan subcommand")
+            .render_help()
+            .to_string();
+        assert!(help.contains("proxy-jump") || help.contains("proxy_jump"));
+        assert!(help.contains("transport"));
+        assert!(help.contains("strict-host-key") || help.contains("strict_host_key"));
+    }
 }

@@ -1,9 +1,12 @@
 [package]
 name = "sshmap"
-version = "2.0.3"
+version = "2.0.5"
 edition = "2024"
 description = "Agentless SSH exposure management and access graph CLI"
-license = "MIT"
+license = "GPL-3.0-or-later"
+authors = ["Cuma Kurt <cumakurt@gmail.com>"]
+repository = "https://github.com/cumakurt/sshmap"
+homepage = "https://github.com/cumakurt/sshmap"
 
 [dependencies]
 anyhow = "1"

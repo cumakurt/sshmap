@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.0.5
+
+- Add comprehensive CLI help: per-command long descriptions, documented flags, workflow after-help, and subcommand help text
+
+## 2.0.4
+
+- Relicense project under GPL-3.0-or-later
+- Expand README with detailed per-feature reference and author contact
+- Add developer metadata to CLI `--help`, embedded dashboard, and React dashboard footer
+
 ## 2.0.3
 
 - Add shared IPv6-aware host target parser for imports, discovery scope, and proxy jumps

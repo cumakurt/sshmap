@@ -175,6 +175,27 @@ export interface GraphListRecord {
   edge_limit: number;
 }
 
+export function parseGraphListResponse(
+  response: GraphListRecord | GraphEdgeRecord[],
+): GraphListRecord {
+  if (Array.isArray(response)) {
+    return {
+      edges: response,
+      truncated: false,
+      total_edges: response.length,
+      edge_limit: response.length,
+    };
+  }
+
+  const edges = Array.isArray(response.edges) ? response.edges : [];
+  return {
+    edges,
+    truncated: Boolean(response.truncated),
+    total_edges: response.total_edges ?? edges.length,
+    edge_limit: response.edge_limit ?? edges.length,
+  };
+}
+
 export interface HardeningReport {
   hosts: HostHardeningScore[];
   summary: Record<string, number>;

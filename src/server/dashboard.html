@@ -111,6 +111,24 @@
       return String(value ?? "").replace(/[^A-Za-z0-9_-]/g, "");
     }
 
+    function normalizeGraphList(payload) {
+      if (Array.isArray(payload)) {
+        return {
+          edges: payload,
+          truncated: false,
+          total_edges: payload.length,
+          edge_limit: payload.length
+        };
+      }
+      const edges = Array.isArray(payload.edges) ? payload.edges : [];
+      return {
+        edges: edges,
+        truncated: !!payload.truncated,
+        total_edges: payload.total_edges != null ? payload.total_edges : edges.length,
+        edge_limit: payload.edge_limit != null ? payload.edge_limit : edges.length
+      };
+    }
+
     function showView(name) {
       views.forEach(view => {
         document.getElementById("view-" + view).classList.toggle("hidden", view !== name);
@@ -166,10 +184,16 @@
           riskTable(risks);
       },
       async graph() {
-        const edges = await api("/api/graph?limit=5000");
+        const graphData = normalizeGraphList(await api("/api/graph?limit=5000"));
+        const edges = graphData.edges;
+        const truncatedNote = graphData.truncated
+          ? " Results are truncated to the selected limit."
+          : "";
         document.getElementById("view-graph").innerHTML =
           '<div class="graph-toolbar">' +
-          '<span style="color:var(--muted);">' + edges.length + ' graph edges loaded.</span>' +
+          '<span style="color:var(--muted);">' + edges.length + ' graph edges loaded' +
+          (graphData.total_edges > 0 ? ' of ' + graphData.total_edges : '') + '.' +
+          truncatedNote + '</span>' +
           '<button type="button" onclick="showGraphCanvas()">Canvas view</button>' +
           '<button type="button" onclick="showGraphTable()">Table view</button>' +
           '</div>' +

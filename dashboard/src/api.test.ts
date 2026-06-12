@@ -3,8 +3,10 @@ import {
   accountHostLabel,
   getToken,
   hostLabel,
+  parseGraphListResponse,
   riskTarget,
   setToken,
+  type GraphEdgeRecord,
   type HostRecord,
   type RiskRecord,
   type UserAccountRecord,
@@ -62,6 +64,43 @@ describe("api helpers", () => {
     };
 
     expect(accountHostLabel(account)).toBe("web01");
+  });
+
+  it("parses graph list API responses", () => {
+    const edge: GraphEdgeRecord = {
+      id: 1,
+      from_type: "HOST",
+      from_id: 1,
+      from_label: "web01",
+      to_type: "USER",
+      to_id: 2,
+      to_label: "deploy@web01",
+      edge_type: "HOST_HAS_USER",
+      weight: 1,
+      confidence: "HIGH",
+      evidence: "test",
+    };
+
+    expect(parseGraphListResponse([edge])).toEqual({
+      edges: [edge],
+      truncated: false,
+      total_edges: 1,
+      edge_limit: 1,
+    });
+
+    expect(
+      parseGraphListResponse({
+        edges: [edge],
+        truncated: true,
+        total_edges: 72,
+        edge_limit: 5000,
+      }),
+    ).toEqual({
+      edges: [edge],
+      truncated: true,
+      total_edges: 72,
+      edge_limit: 5000,
+    });
   });
 
   it("formats risk targets for user and host scoped findings", () => {

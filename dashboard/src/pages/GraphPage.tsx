@@ -1,6 +1,6 @@
 import cytoscape, { type ElementDefinition } from "cytoscape";
 import { useEffect, useRef, useState } from "react";
-import { api, type GraphEdgeRecord, type GraphListRecord } from "../api";
+import { api, parseGraphListResponse, type GraphEdgeRecord } from "../api";
 
 function cytoscapeNodeId(type: string, id: number): string {
   return `${type}:${id}`;
@@ -48,11 +48,12 @@ export function GraphPage() {
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    api<GraphListRecord>(`/api/graph?limit=${limit}`)
+    api(`/api/graph?limit=${limit}`)
       .then((response) => {
-        setEdges(response.edges);
-        setTruncated(response.truncated);
-        setTotalEdges(response.total_edges);
+        const graph = parseGraphListResponse(response);
+        setEdges(graph.edges);
+        setTruncated(graph.truncated);
+        setTotalEdges(graph.total_edges);
       })
       .catch(() => {
         setEdges([]);

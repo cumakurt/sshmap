@@ -123,9 +123,17 @@ fn offline_import_analyze_and_report_workflow() {
 #[test]
 fn quick_all_file_workflow_creates_session_artifacts() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
-    let hosts_path = temp_dir.path().join("hosts");
+    let hosts_path = temp_dir.path().join("target.txt");
     let reports_dir = temp_dir.path().join("reports");
-    fs::write(&hosts_path, "203.0.113.1 example-host\n").expect("write hosts");
+    fs::write(
+        &hosts_path,
+        "\
+        203.0.113.1, 203.0.113.2\n\
+        ssh://audit@203.0.113.3:22\n\
+        203.0.113.4 example-host\n\
+        203.0.113.5-6\n",
+    )
+    .expect("write hosts");
 
     let output = run_sshmap(&["-a", "-f"])
         .arg(&hosts_path)
@@ -137,6 +145,7 @@ fn quick_all_file_workflow_creates_session_artifacts() {
     assert_success(&output);
 
     let stdout = String::from_utf8(output.stdout).expect("utf8 stdout");
+    assert!(stdout.contains("Targets expanded: 6"));
     assert!(stdout.contains("Interactive dashboard command:"));
     assert!(stdout.contains("serve --read-only --db"));
 

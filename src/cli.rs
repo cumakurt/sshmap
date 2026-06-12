@@ -39,7 +39,7 @@ pub struct Cli {
     )]
     pub all_targets: Option<String>,
 
-    /// Quick workflow target file (one target per line or /etc/hosts-style entries)
+    /// Quick workflow target file (mixed IP/CIDR/range/URL or /etc/hosts-style entries)
     #[arg(
         short = 'f',
         long = "file",

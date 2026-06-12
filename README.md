@@ -487,6 +487,7 @@ Full one-command run. This creates a timestamped session under `reports/`, disco
 ```bash
 sshmap -a -t 192.168.0.0/24
 sshmap -a -f /etc/hosts
+sshmap -a -f target.txt
 ```
 
 Optional quick-run controls:
@@ -495,6 +496,8 @@ Optional quick-run controls:
 sshmap -a -t 10.10.0.0/24 --user audit --key ~/.ssh/audit_ed25519 --sudo
 sshmap -a -f hosts.txt --session branch-office --reports-dir reports --timeout 5
 ```
+
+Target files can contain mixed formats: one target per line, comma/space/semicolon separated values, `/etc/hosts` entries, CIDR blocks, IPv4 ranges such as `192.168.1.10-20`, wildcard IPv4 values such as `192.168.1.*`, `host:port` / `[IPv6]:port`, `key=value`, and URLs such as `ssh://user@192.168.1.10:22`. The quick workflow still scans the resolved targets on port 22 by default.
 
 The quick workflow uses OpenSSH directly (`ssh`) with your SSH config, agent, and default keys when `--key` is omitted. Outputs are written to `reports/<timestamp-session>/`, including `sshmap.db`, HTML/JSON/CSV reports, graph exports, SARIF, remediation files, and an evidence bundle.
 

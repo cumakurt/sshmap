@@ -66,6 +66,20 @@ pub enum Command {
     #[command(long_about = crate::cli_help::SCAN_LONG)]
     Scan(ScanArgs),
 
+    /// Run discover, scan, analyze, and optional enrichment as one workflow
+    #[command(long_about = crate::cli_help::WORKFLOW_LONG)]
+    Workflow {
+        #[command(subcommand)]
+        command: WorkflowCommand,
+    },
+
+    /// List and inspect recorded scan/import runs
+    #[command(long_about = crate::cli_help::SCAN_RUNS_LONG)]
+    ScanRuns {
+        #[command(subcommand)]
+        command: ScanRunsCommand,
+    },
+
     /// Read-only audit of the local host (no SSH)
     #[command(long_about = crate::cli_help::LOCAL_SCAN_LONG)]
     LocalScan(LocalScanArgs),
@@ -269,6 +283,10 @@ pub struct ScanArgs {
     #[arg(long, help = "Remote SSH username (required unless set in config)")]
     pub user: Option<String>,
 
+    /// File containing one SSH username per line for multi-perspective scans
+    #[arg(long, value_name = "PATH")]
+    pub users_file: Option<PathBuf>,
+
     /// Path to SSH private key used for authentication
     #[arg(long, value_name = "PATH")]
     pub key: Option<PathBuf>,
@@ -332,6 +350,151 @@ pub struct ScanArgs {
     /// Bastion chain for OpenSSH ProxyJump (-J); comma-separated for multiple hops
     #[arg(long, short = 'J', value_name = "HOST")]
     pub proxy_jump: Option<String>,
+
+    #[arg(long, default_value = "sshmap.db", help = "SQLite database file path")]
+    pub db: PathBuf,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum WorkflowCommand {
+    /// Run discover -> scan -> analyze and optional DNS enrichment
+    Run(WorkflowRunArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct WorkflowRunArgs {
+    /// Comma-separated targets: IPs, CIDRs, or hostnames
+    #[arg(long, conflicts_with = "file", help = "Inline target list")]
+    pub targets: Option<String>,
+
+    /// File with one target per line
+    #[arg(long, value_name = "PATH", conflicts_with = "targets")]
+    pub file: Option<PathBuf>,
+
+    /// SSH username for authenticated collection
+    #[arg(long)]
+    pub user: Option<String>,
+
+    /// File containing one SSH username per line
+    #[arg(long, value_name = "PATH")]
+    pub users_file: Option<PathBuf>,
+
+    /// Path to SSH private key used for authentication
+    #[arg(long, value_name = "PATH")]
+    pub key: Option<PathBuf>,
+
+    /// Authenticate with keys loaded in the local SSH agent
+    #[arg(long)]
+    pub agent: bool,
+
+    /// SSH agent socket path (default: SSH_AUTH_SOCK environment variable)
+    #[arg(long, value_name = "PATH")]
+    pub identity_agent: Option<PathBuf>,
+
+    /// Restrict authentication to --key only
+    #[arg(long)]
+    pub identities_only: bool,
+
+    /// Allow SSH agent keys in addition to --key when both are configured
+    #[arg(long, conflicts_with = "identities_only")]
+    pub no_identities_only: bool,
+
+    /// Prefix root-readable commands with non-interactive sudo
+    #[arg(long)]
+    pub sudo: bool,
+
+    /// Comma-separated SSH ports
+    #[arg(long, default_value = "22")]
+    pub ports: String,
+
+    /// Maximum concurrent TCP probes
+    #[arg(long, default_value_t = 100)]
+    pub discover_concurrency: usize,
+
+    /// Maximum concurrent host scans
+    #[arg(long, default_value_t = 20)]
+    pub scan_concurrency: usize,
+
+    /// Per-target timeout in seconds
+    #[arg(long, default_value_t = 10)]
+    pub timeout: u64,
+
+    /// Print progress while phases run
+    #[arg(long)]
+    pub progress: bool,
+
+    /// Maximum number of expanded targets allowed
+    #[arg(long)]
+    pub max_targets: Option<usize>,
+
+    /// SSH client backend: openssh or native
+    #[arg(long, default_value = "openssh", value_name = "openssh|native")]
+    pub transport: String,
+
+    /// Host key verification policy: yes, no, or accept-new
+    #[arg(long, value_name = "yes|no|accept-new", default_value = "accept-new")]
+    pub strict_host_key: String,
+
+    /// Known hosts file for strict host key checking
+    #[arg(long, value_name = "PATH")]
+    pub known_hosts: Option<PathBuf>,
+
+    /// Disable OpenSSH ControlMaster connection reuse
+    #[arg(long)]
+    pub no_connection_reuse: bool,
+
+    /// Bastion chain for OpenSSH ProxyJump (-J)
+    #[arg(long, short = 'J', value_name = "HOST")]
+    pub proxy_jump: Option<String>,
+
+    /// Run DNS enrichment after analysis
+    #[arg(long)]
+    pub enrich_dns: bool,
+
+    /// Include reverse DNS enrichment when --enrich-dns is set
+    #[arg(long)]
+    pub reverse_dns: bool,
+
+    /// Repeat workflow every N seconds for lightweight scheduled audits
+    #[arg(long)]
+    pub repeat_every_seconds: Option<u64>,
+
+    /// Number of workflow iterations when --repeat-every-seconds is used
+    #[arg(long, default_value_t = 1)]
+    pub repeat_count: usize,
+
+    #[arg(long, default_value = "sshmap.db", help = "SQLite database file path")]
+    pub db: PathBuf,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ScanRunsCommand {
+    /// List scan, discovery, local-scan, and import runs
+    List(ScanRunListArgs),
+    /// Show one run and its audit events
+    Show(ScanRunShowArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct ScanRunListArgs {
+    /// Maximum number of rows to return
+    #[arg(long, default_value_t = 50)]
+    pub limit: usize,
+
+    #[arg(long)]
+    pub json: bool,
+
+    #[arg(long, default_value = "sshmap.db", help = "SQLite database file path")]
+    pub db: PathBuf,
+}
+
+#[derive(Debug, Args)]
+pub struct ScanRunShowArgs {
+    /// Numeric scan run ID or run UUID
+    pub id: String,
+
+    #[arg(long)]
+    pub json: bool,
 
     #[arg(long, default_value = "sshmap.db", help = "SQLite database file path")]
     pub db: PathBuf,
@@ -780,6 +943,10 @@ pub struct ServeArgs {
     /// API token sent via X-SSHMap-Token header (required on non-loopback binds)
     #[arg(long, help = "Require X-SSHMap-Token header for /api/* routes")]
     pub token: Option<String>,
+
+    /// Enable write API endpoints for baselines and exceptions (requires --token)
+    #[arg(long)]
+    pub allow_write_api: bool,
 
     /// Directory containing a built React dashboard (index.html + assets)
     #[arg(long, value_name = "DIR")]

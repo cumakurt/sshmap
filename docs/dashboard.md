@@ -67,13 +67,16 @@ Every push and pull request runs `npm ci && npm run build` in `dashboard/` along
 | `/keys/:id` | Key detail with locations and risks |
 | `/risks` | Risk findings list |
 | `/risks/:id` | Risk detail with evidence and remediation |
-| `/graph` | Access graph canvas and edge table |
+| `/graph` | Access graph canvas and edge table with edge limit and edge type filters |
 | `/data-quality` | Host aliases and inventory consistency findings |
+| `/operations` | Scan run history, baselines, and baseline diff |
 | `/tools` | API token, path analysis, blast radius, exceptions, remediation lookup |
 
 ## Authentication
 
 If the server is started with `--token`, store the same value from the Tools page. The dashboard sends it as the `X-SSHMap-Token` header on API requests.
+
+Creating baselines or exceptions from the dashboard requires `sshmap serve --allow-write-api --token ...`.
 
 Detail pages show breadcrumb navigation (for example `Hosts / web01`) instead of single back links.
 

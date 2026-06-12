@@ -272,10 +272,66 @@ pub async fn blast_radius(
     )))
 }
 
+#[derive(Debug, Deserialize)]
+pub struct ScanRunListQuery {
+    pub limit: Option<usize>,
+}
+
+pub async fn list_scan_runs(
+    State(state): State<AppState>,
+    Query(query): Query<ScanRunListQuery>,
+) -> Result<Json<Vec<crate::models::ScanRunRecord>>, ApiError> {
+    Ok(Json(crate::db::list_scan_runs_read_only(
+        &state.db_path,
+        query.limit.unwrap_or(50).min(API_LIMIT),
+    )?))
+}
+
+pub async fn get_scan_run(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<crate::models::ScanRunDetailRecord>, ApiError> {
+    let id = required_param(&id, "scan run id", API_REF_PARAM_MAX_BYTES)?;
+    let Some(run) = crate::db::get_scan_run_read_only(&state.db_path, id)? else {
+        return Err(ApiError::not_found("scan run not found"));
+    };
+    Ok(Json(run))
+}
+
 pub async fn list_baselines(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<crate::models::BaselineRecord>>, ApiError> {
     Ok(Json(crate::db::list_baselines_read_only(&state.db_path)?))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateBaselineRequest {
+    pub name: String,
+}
+
+pub async fn create_baseline(
+    State(state): State<AppState>,
+    Json(request): Json<CreateBaselineRequest>,
+) -> Result<Json<crate::models::BaselineRecord>, ApiError> {
+    ensure_write_enabled(&state)?;
+    let name = required_param(&request.name, "baseline name", API_FILTER_PARAM_MAX_BYTES)?;
+    Ok(Json(crate::db::create_baseline(&state.db_path, name)?))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DiffQuery {
+    pub from: String,
+    pub to: Option<String>,
+}
+
+pub async fn diff_baselines(
+    State(state): State<AppState>,
+    Query(query): Query<DiffQuery>,
+) -> Result<Json<crate::models::BaselineDiffRecord>, ApiError> {
+    let from = required_param(&query.from, "from", API_FILTER_PARAM_MAX_BYTES)?;
+    let to = query.to.as_deref().unwrap_or("latest");
+    let to = required_param(to, "to", API_FILTER_PARAM_MAX_BYTES)?;
+    Ok(Json(crate::db::diff_baselines(&state.db_path, from, to)?))
 }
 
 pub async fn list_exceptions(
@@ -284,6 +340,47 @@ pub async fn list_exceptions(
     Ok(Json(crate::db::list_risk_exceptions_read_only(
         &state.db_path,
     )?))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AddExceptionRequest {
+    pub code: String,
+    pub reason: String,
+    pub host_id: Option<i64>,
+    pub username: Option<String>,
+    pub fingerprint: Option<String>,
+    pub expires_at: Option<String>,
+}
+
+pub async fn add_exception(
+    State(state): State<AppState>,
+    Json(request): Json<AddExceptionRequest>,
+) -> Result<Json<crate::models::RiskExceptionRecord>, ApiError> {
+    ensure_write_enabled(&state)?;
+    let code = required_param(&request.code, "code", API_FILTER_PARAM_MAX_BYTES)?;
+    let reason = required_param(&request.reason, "reason", API_REF_PARAM_MAX_BYTES)?;
+    Ok(Json(crate::db::add_risk_exception(
+        &state.db_path,
+        &crate::models::NewRiskException {
+            risk_code: code.to_ascii_uppercase(),
+            host_id: request.host_id,
+            username: request.username,
+            public_key_fingerprint: request.fingerprint,
+            reason: reason.to_string(),
+            expires_at: request.expires_at,
+        },
+    )?))
+}
+
+pub async fn remove_exception(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    ensure_write_enabled(&state)?;
+    if !crate::db::remove_risk_exception(&state.db_path, id)? {
+        return Err(ApiError::not_found("exception not found"));
+    }
+    Ok(Json(serde_json::json!({ "removed": true, "id": id })))
 }
 
 pub async fn list_known_hosts(
@@ -350,6 +447,23 @@ impl ApiError {
             status: StatusCode::BAD_REQUEST,
             message: message.to_string(),
         }
+    }
+
+    fn forbidden(message: &str) -> Self {
+        Self {
+            status: StatusCode::FORBIDDEN,
+            message: message.to_string(),
+        }
+    }
+}
+
+fn ensure_write_enabled(state: &AppState) -> Result<(), ApiError> {
+    if state.allow_write_api {
+        Ok(())
+    } else {
+        Err(ApiError::forbidden(
+            "write API is disabled; restart serve with --allow-write-api",
+        ))
     }
 }
 

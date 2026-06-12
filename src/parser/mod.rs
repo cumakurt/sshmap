@@ -1,6 +1,7 @@
 pub mod authorized_keys;
 pub mod common;
 pub mod group;
+pub mod host_metadata;
 pub mod hosts_file;
 pub mod known_hosts;
 pub mod passwd;

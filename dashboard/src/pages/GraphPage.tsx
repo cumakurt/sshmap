@@ -41,11 +41,16 @@ function toCytoscapeElements(edges: GraphEdgeRecord[]): ElementDefinition[] {
 export function GraphPage() {
   const [edges, setEdges] = useState<GraphEdgeRecord[]>([]);
   const [view, setView] = useState<"canvas" | "table">("canvas");
+  const [limit, setLimit] = useState(2000);
+  const [edgeType, setEdgeType] = useState("");
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    api<GraphEdgeRecord[]>("/api/graph").then(setEdges).catch(() => setEdges([]));
-  }, []);
+    api<GraphEdgeRecord[]>(`/api/graph?limit=${limit}`).then(setEdges).catch(() => setEdges([]));
+  }, [limit]);
+
+  const edgeTypes = [...new Set(edges.map((edge) => edge.edge_type))].sort();
+  const visibleEdges = edgeType ? edges.filter((edge) => edge.edge_type === edgeType) : edges;
 
   useEffect(() => {
     if (view !== "canvas" || !containerRef.current) {
@@ -54,7 +59,7 @@ export function GraphPage() {
 
     const cy = cytoscape({
       container: containerRef.current,
-      elements: toCytoscapeElements(edges.slice(0, 500)),
+      elements: toCytoscapeElements(visibleEdges),
       style: [
         {
           selector: "node",
@@ -87,12 +92,32 @@ export function GraphPage() {
     return () => {
       cy.destroy();
     };
-  }, [edges, view]);
+  }, [visibleEdges, view]);
 
   return (
     <>
       <div className="graph-toolbar">
         <span className="muted">{edges.length} graph edges loaded.</span>
+        <label>
+          Limit
+          <select value={limit} onChange={(event) => setLimit(Number(event.target.value))}>
+            <option value={500}>500</option>
+            <option value={2000}>2000</option>
+            <option value={5000}>5000</option>
+            <option value={10000}>10000</option>
+          </select>
+        </label>
+        <label>
+          Edge
+          <select value={edgeType} onChange={(event) => setEdgeType(event.target.value)}>
+            <option value="">All</option>
+            {edgeTypes.map((type) => (
+              <option key={type} value={type}>
+                {type}
+              </option>
+            ))}
+          </select>
+        </label>
         <button type="button" onClick={() => setView("canvas")}>
           Canvas view
         </button>
@@ -112,7 +137,7 @@ export function GraphPage() {
             </tr>
           </thead>
           <tbody>
-            {edges.slice(0, 200).map((edge) => (
+            {visibleEdges.map((edge) => (
               <tr key={edge.id}>
                 <td>{edge.from_label}</td>
                 <td>{edge.edge_type}</td>

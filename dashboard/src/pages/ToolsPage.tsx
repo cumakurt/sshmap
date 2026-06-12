@@ -1,6 +1,7 @@
 import { useState } from "react";
 import {
   api,
+  apiPost,
   getToken,
   setToken,
   type BlastRadiusRecord,
@@ -15,6 +16,8 @@ export function ToolsPage() {
   const [pathTo, setPathTo] = useState("");
   const [blastUser, setBlastUser] = useState("");
   const [riskCode, setRiskCode] = useState("");
+  const [exceptionCode, setExceptionCode] = useState("");
+  const [exceptionReason, setExceptionReason] = useState("");
   const [output, setOutput] = useState("Use the controls below to query path and blast radius analysis.");
 
   async function runQuery(label: string, request: Promise<unknown>) {
@@ -107,6 +110,38 @@ export function ToolsPage() {
           }
         >
           Load exceptions
+        </button>
+      </div>
+
+      <div className="tools-section panel">
+        <h2>Exception</h2>
+        <label htmlFor="exception-code">Risk code</label>
+        <input
+          id="exception-code"
+          value={exceptionCode}
+          onChange={(event) => setExceptionCode(event.target.value)}
+          placeholder="SSH_PASSWORD_AUTH_ENABLED"
+        />
+        <label htmlFor="exception-reason">Reason</label>
+        <input
+          id="exception-reason"
+          value={exceptionReason}
+          onChange={(event) => setExceptionReason(event.target.value)}
+          placeholder="accepted until remediation window"
+        />
+        <button
+          type="button"
+          onClick={() =>
+            runQuery(
+              "Add exception",
+              apiPost<RiskExceptionRecord>("/api/exceptions", {
+                code: exceptionCode,
+                reason: exceptionReason,
+              }),
+            )
+          }
+        >
+          Add
         </button>
       </div>
 

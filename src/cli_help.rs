@@ -47,10 +47,24 @@ pub const SCAN_LONG: &str = "\
 Collect read-only SSH security evidence from live hosts.
 
 Connects with an audit SSH key or agent and runs fixed read-only commands
-(passwd, authorized_keys, sshd_config, sudoers, known_hosts, ssh_config,
-/etc/hosts, etc.).
+(passwd, authorized_keys, sshd_config, effective sshd -T, sudoers,
+known_hosts, ssh_config, /etc/hosts, /etc/os-release, etc.).
 Evidence is stored as raw text for later analysis. Private key contents are
-never collected.";
+never collected. Use --users-file to repeat collection from multiple SSH user
+perspectives with the same configured identity source.";
+
+pub const WORKFLOW_LONG: &str = "\
+Run a full SSHMap audit workflow.
+
+The run subcommand chains discovery, authenticated scan, analysis, and optional
+DNS enrichment. It is a CLI-first wrapper around existing read-only phases and
+can repeat on an interval for lightweight scheduled audits.";
+
+pub const SCAN_RUNS_LONG: &str = "\
+Inspect recorded scan, discovery, local-scan, and import runs.
+
+Scan run history includes mode, timestamps, status, operator, sudo flag,
+targets, summaries, and audit events.";
 
 pub const LOCAL_SCAN_LONG: &str = "\
 Audit the local machine without SSH.
@@ -134,12 +148,13 @@ ssh_config, authorized_keys, sudoers, and prior SSHMap JSON reports.
 Run analyze after importing evidence.";
 
 pub const SERVE_LONG: &str = "\
-Expose the inventory through a read-only HTTP API and dashboard.
+Expose the inventory through an HTTP API and dashboard.
 
 Opens the database in SQLite read-only mode. API routes live under /api/*,
 including host aliases, data quality findings, and remediation guidance.
-Use --token on non-loopback listeners. Pass --dashboard to serve the React
-build from dashboard/dist.";
+Use --token on non-loopback listeners. Mutating baseline and exception
+endpoints require --allow-write-api and a token. Pass --dashboard to serve the
+React build from dashboard/dist.";
 
 pub const EXCEPTIONS_LONG: &str = "\
 Suppress accepted findings during analysis.

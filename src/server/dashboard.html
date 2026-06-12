@@ -58,10 +58,11 @@
     <section id="view-risks" class="hidden"></section>
     <section id="view-graph" class="hidden"></section>
     <section id="view-quality" class="hidden"></section>
+    <section id="view-runs" class="hidden"></section>
     <section id="view-tools" class="hidden"></section>
   </main>
   <script>
-    const views = ["dashboard","hosts","users","keys","risks","graph","quality","tools"];
+    const views = ["dashboard","hosts","users","keys","risks","graph","quality","runs","tools"];
     const nav = document.getElementById("nav");
     views.forEach(name => {
       const button = document.createElement("button");
@@ -165,7 +166,7 @@
           riskTable(risks);
       },
       async graph() {
-        const edges = await api("/api/graph");
+        const edges = await api("/api/graph?limit=5000");
         document.getElementById("view-graph").innerHTML =
           '<div class="graph-toolbar">' +
           '<span style="color:var(--muted);">' + edges.length + ' graph edges loaded.</span>' +
@@ -176,6 +177,17 @@
           '<div id="graph-table"></div>';
         window.__graphEdges = edges;
         showGraphCanvas();
+      },
+      async runs() {
+        const runs = await api("/api/scan-runs?limit=20");
+        const baselines = await api("/api/baselines");
+        document.getElementById("view-runs").innerHTML =
+          '<h2>Scan Runs</h2>' +
+          table(["ID","Mode","Status","Started","Finished","Operator"],
+            runs.map(function(r) { return [r.id, r.mode, r.status, r.started_at, r.finished_at || "-", r.operator || "-"]; })) +
+          '<h2>Baselines</h2>' +
+          table(["Name","Created","Critical","High","Total"],
+            baselines.map(function(b) { return [b.name, b.created_at, b.summary.critical_risks, b.summary.high_risks, b.summary.risks]; }));
       },
       async quality() {
         const findings = await api("/api/data-quality");
@@ -264,7 +276,7 @@
       const edges = window.__graphEdges || [];
       document.getElementById("graph-cy").classList.remove("hidden");
       document.getElementById("graph-table").classList.add("hidden");
-      const elements = toCytoscapeElements(edges.slice(0, 500));
+      const elements = toCytoscapeElements(edges);
       cytoscape({
         container: document.getElementById("graph-cy"),
         elements: elements,

@@ -158,15 +158,19 @@ fn render_hosts_monitoring_csv(
     }
 
     let mut csv = String::from(
-        "hostname,ip_address,port,ssh_open,critical_risks,high_risks,total_risks,user_count\n",
+        "hostname,ip_address,port,os_family,os_version,environment,criticality,ssh_open,critical_risks,high_risks,total_risks,user_count\n",
     );
     for host in hosts {
         writeln!(
             csv,
-            "{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{},{},{},{},{}",
             crate::csv::field(host.hostname.as_deref().unwrap_or("")),
             crate::csv::field(&host.ip_address),
             host.port,
+            crate::csv::field(host.os_family.as_deref().unwrap_or("")),
+            crate::csv::field(host.os_version.as_deref().unwrap_or("")),
+            crate::csv::field(host.environment.as_deref().unwrap_or("")),
+            crate::csv::field(host.criticality.as_deref().unwrap_or("")),
             yes_no(host.ssh_open),
             critical_by_host.get(&host.id).copied().unwrap_or(0),
             high_by_host.get(&host.id).copied().unwrap_or(0),

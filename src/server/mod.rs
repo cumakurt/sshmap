@@ -2,7 +2,10 @@ mod api;
 
 use crate::models::ApiSummary;
 use anyhow::{Context, Result, bail};
-use axum::{Router, middleware, routing::get};
+use axum::{
+    Router, middleware,
+    routing::{delete, get, post},
+};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use tower_http::services::{ServeDir, ServeFile};
@@ -13,6 +16,7 @@ pub struct ServerConfig {
     pub db_path: PathBuf,
     pub listen: SocketAddr,
     pub read_only: bool,
+    pub allow_write_api: bool,
     pub token: Option<String>,
     pub dashboard_dir: Option<PathBuf>,
 }
@@ -21,6 +25,7 @@ pub struct ServerConfig {
 pub struct AppState {
     pub db_path: PathBuf,
     pub token: Option<String>,
+    pub allow_write_api: bool,
 }
 
 pub async fn run_server(config: ServerConfig) -> Result<()> {
@@ -28,7 +33,7 @@ pub async fn run_server(config: ServerConfig) -> Result<()> {
         bail!("database not found: {}", config.db_path.display());
     }
 
-    if !config.read_only {
+    if !config.read_only && !config.allow_write_api {
         bail!("sshmap serve currently supports read-only mode only; pass --read-only");
     }
 
@@ -37,6 +42,9 @@ pub async fn run_server(config: ServerConfig) -> Result<()> {
     }
 
     let token = normalize_api_token(config.token)?;
+    if config.allow_write_api && token.is_none() {
+        bail!("--token is required when --allow-write-api is enabled");
+    }
 
     if token.is_none() {
         if !config.listen.ip().is_loopback() {
@@ -53,6 +61,7 @@ pub async fn run_server(config: ServerConfig) -> Result<()> {
     let state = AppState {
         db_path: config.db_path.clone(),
         token: token.clone(),
+        allow_write_api: config.allow_write_api,
     };
 
     let app = build_app(state, config.dashboard_dir.clone());
@@ -61,10 +70,12 @@ pub async fn run_server(config: ServerConfig) -> Result<()> {
         .await
         .with_context(|| format!("failed to bind to {}", config.listen))?;
 
-    println!(
-        "SSHMap read-only server listening on http://{}",
-        config.listen
-    );
+    let mode = if config.allow_write_api {
+        "read/write"
+    } else {
+        "read-only"
+    };
+    println!("SSHMap {mode} server listening on http://{}", config.listen);
     println!("Database: {}", config.db_path.display());
     if let Some(dashboard_dir) = &config.dashboard_dir {
         println!("Dashboard: {}", dashboard_dir.display());
@@ -73,6 +84,9 @@ pub async fn run_server(config: ServerConfig) -> Result<()> {
     }
     if token.is_some() {
         println!("API token authentication: enabled");
+    }
+    if config.allow_write_api {
+        println!("Write API endpoints: enabled");
     }
 
     axum::serve(listener, app)
@@ -113,8 +127,14 @@ pub fn build_app(state: AppState, dashboard_dir: Option<PathBuf>) -> Router {
         .route("/api/graph", get(api::list_graph))
         .route("/api/path", get(api::find_path))
         .route("/api/blast-radius", get(api::blast_radius))
+        .route("/api/scan-runs", get(api::list_scan_runs))
+        .route("/api/scan-runs/{id}", get(api::get_scan_run))
         .route("/api/baselines", get(api::list_baselines))
+        .route("/api/baselines", post(api::create_baseline))
+        .route("/api/diff", get(api::diff_baselines))
         .route("/api/exceptions", get(api::list_exceptions))
+        .route("/api/exceptions", post(api::add_exception))
+        .route("/api/exceptions/{id}", delete(api::remove_exception))
         .route("/api/known-hosts", get(api::list_known_hosts))
         .route("/api/ssh-config", get(api::list_ssh_config))
         .route("/api/host-aliases", get(api::list_host_aliases))
@@ -235,6 +255,7 @@ mod tests {
             AppState {
                 db_path: db_path.clone(),
                 token: Some("secret-token".to_string()),
+                allow_write_api: false,
             },
             None,
         );

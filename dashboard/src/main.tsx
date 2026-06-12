@@ -9,6 +9,7 @@ import { HostDetailPage } from "./pages/HostDetailPage";
 import { HostsPage } from "./pages/HostsPage";
 import { KeyDetailPage } from "./pages/KeyDetailPage";
 import { KeysPage } from "./pages/KeysPage";
+import { OperationsPage } from "./pages/OperationsPage";
 import { RiskDetailPage } from "./pages/RiskDetailPage";
 import { RisksPage } from "./pages/RisksPage";
 import { ToolsPage } from "./pages/ToolsPage";
@@ -51,6 +52,7 @@ function AppShell() {
           <Route path="risks" element={<RisksPage />} />
           <Route path="risks/:id" element={<RiskDetailPage />} />
           <Route path="data-quality" element={<DataQualityPage />} />
+          <Route path="operations" element={<OperationsPage />} />
           <Route
             path="graph"
             element={

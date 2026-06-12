@@ -45,6 +45,20 @@ pub fn import_csv_inventory(
                 .iter()
                 .position(|column| column.eq_ignore_ascii_case("port"))
         });
+    let optional_column = |name: &str| {
+        mapping
+            .get(name)
+            .and_then(|value| columns.iter().position(|column| column == value))
+            .or_else(|| {
+                columns
+                    .iter()
+                    .position(|column| column.eq_ignore_ascii_case(name))
+            })
+    };
+    let os_family_idx = optional_column("os_family");
+    let os_version_idx = optional_column("os_version");
+    let environment_idx = optional_column("environment");
+    let criticality_idx = optional_column("criticality");
 
     let mut hosts = Vec::new();
     for line in lines {
@@ -68,11 +82,22 @@ pub fn import_csv_inventory(
             fqdn: hostname,
             ip_address,
             port,
+            os_family: optional_field(&fields, os_family_idx),
+            os_version: optional_field(&fields, os_version_idx),
+            environment: optional_field(&fields, environment_idx),
+            criticality: optional_field(&fields, criticality_idx),
             ssh_open: true,
         });
     }
 
     store_hosts(db_path, "csv", &hosts)
+}
+
+fn optional_field(fields: &[String], index: Option<usize>) -> Option<String> {
+    index
+        .and_then(|index| fields.get(index))
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 fn load_mapping(path: Option<&Path>) -> Result<BTreeMap<String, String>> {

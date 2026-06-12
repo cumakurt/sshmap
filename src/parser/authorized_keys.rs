@@ -6,11 +6,17 @@ use sha2::{Digest, Sha256};
 
 const KEY_TYPES: &[&str] = &[
     "ssh-ed25519",
+    "ssh-ed25519-cert-v01@openssh.com",
     "ssh-rsa",
+    "ssh-rsa-cert-v01@openssh.com",
     "ssh-dss",
+    "ssh-dss-cert-v01@openssh.com",
     "ecdsa-sha2-nistp256",
+    "ecdsa-sha2-nistp256-cert-v01@openssh.com",
     "ecdsa-sha2-nistp384",
+    "ecdsa-sha2-nistp384-cert-v01@openssh.com",
     "ecdsa-sha2-nistp521",
+    "ecdsa-sha2-nistp521-cert-v01@openssh.com",
     "sk-ssh-ed25519@openssh.com",
     "sk-ecdsa-sha2-nistp256@openssh.com",
 ];
@@ -93,6 +99,7 @@ fn parse_authorized_key_line(
         public_key: ParsedPublicKey {
             key_type: key_type.clone(),
             fingerprint_sha256,
+            key_bits: key_bits(&key_type, &key_bytes),
             key_comment: comment,
             normalized_public_key: format!("{key_type} {key_blob}"),
         },
@@ -106,6 +113,77 @@ fn parse_authorized_key_line(
         permits_agent_forwarding,
         permits_x11_forwarding,
     })
+}
+
+fn key_bits(key_type: &str, key_bytes: &[u8]) -> Option<i64> {
+    let mut cursor = KeyBlobCursor::new(key_bytes);
+    let blob_key_type = cursor.read_string().ok()?;
+    if blob_key_type != key_type {
+        return None;
+    }
+
+    match key_type {
+        "ssh-rsa" => {
+            cursor.read_mpint().ok()?;
+            cursor.read_mpint().ok().map(mpint_bits)
+        }
+        "ssh-dss" => cursor.read_mpint().ok().map(mpint_bits),
+        "ssh-ed25519" | "sk-ssh-ed25519@openssh.com" => Some(256),
+        "ecdsa-sha2-nistp256" | "sk-ecdsa-sha2-nistp256@openssh.com" => Some(256),
+        "ecdsa-sha2-nistp384" => Some(384),
+        "ecdsa-sha2-nistp521" => Some(521),
+        _ if key_type.ends_with("-cert-v01@openssh.com") => None,
+        _ => None,
+    }
+}
+
+struct KeyBlobCursor<'a> {
+    bytes: &'a [u8],
+    offset: usize,
+}
+
+impl<'a> KeyBlobCursor<'a> {
+    fn new(bytes: &'a [u8]) -> Self {
+        Self { bytes, offset: 0 }
+    }
+
+    fn read_string(&mut self) -> Result<String> {
+        let bytes = self.read_bytes()?;
+        Ok(String::from_utf8_lossy(bytes).into_owned())
+    }
+
+    fn read_mpint(&mut self) -> Result<&'a [u8]> {
+        self.read_bytes()
+    }
+
+    fn read_bytes(&mut self) -> Result<&'a [u8]> {
+        anyhow::ensure!(self.offset + 4 <= self.bytes.len(), "truncated key blob");
+        let len = u32::from_be_bytes(
+            self.bytes[self.offset..self.offset + 4]
+                .try_into()
+                .expect("slice length checked"),
+        ) as usize;
+        self.offset += 4;
+        anyhow::ensure!(
+            self.offset + len <= self.bytes.len(),
+            "truncated key blob field"
+        );
+        let value = &self.bytes[self.offset..self.offset + len];
+        self.offset += len;
+        Ok(value)
+    }
+}
+
+fn mpint_bits(value: &[u8]) -> i64 {
+    let value = value
+        .iter()
+        .skip_while(|byte| **byte == 0)
+        .copied()
+        .collect::<Vec<_>>();
+    let Some(first) = value.first() else {
+        return 0;
+    };
+    ((value.len() - 1) * 8 + (8 - first.leading_zeros() as usize)) as i64
 }
 
 fn split_authorized_key_tokens(line: &str) -> Vec<String> {

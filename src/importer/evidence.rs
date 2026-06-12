@@ -76,6 +76,22 @@ pub fn import_json_report(path: &Path, db_path: &Path) -> Result<crate::models::
                     .get("port")
                     .and_then(|value| value.as_i64())
                     .unwrap_or(22),
+                os_family: host
+                    .get("os_family")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string),
+                os_version: host
+                    .get("os_version")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string),
+                environment: host
+                    .get("environment")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string),
+                criticality: host
+                    .get("criticality")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string),
                 ssh_open: host
                     .get("ssh_open")
                     .and_then(|value| value.as_bool())

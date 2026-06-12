@@ -6,10 +6,29 @@ pub fn parse_sshd_config(
     host_id: i64,
     source_file: &str,
 ) -> Vec<ParsedSshdConfigEntry> {
+    parse_sshd_config_with_effective(content, host_id, source_file, false)
+}
+
+pub fn parse_effective_sshd_config(
+    content: &str,
+    host_id: i64,
+    source_file: &str,
+) -> Vec<ParsedSshdConfigEntry> {
+    parse_sshd_config_with_effective(content, host_id, source_file, true)
+}
+
+fn parse_sshd_config_with_effective(
+    content: &str,
+    host_id: i64,
+    source_file: &str,
+    effective: bool,
+) -> Vec<ParsedSshdConfigEntry> {
     content
         .lines()
         .enumerate()
-        .filter_map(|(index, line)| parse_config_line(line, host_id, source_file, index + 1))
+        .filter_map(|(index, line)| {
+            parse_config_line(line, host_id, source_file, index + 1, effective)
+        })
         .collect()
 }
 
@@ -18,6 +37,7 @@ fn parse_config_line(
     host_id: i64,
     source_file: &str,
     line_number: usize,
+    effective: bool,
 ) -> Option<ParsedSshdConfigEntry> {
     let trimmed = strip_inline_comment(line).trim();
     if trimmed.is_empty() {
@@ -34,6 +54,7 @@ fn parse_config_line(
         value: if value.is_empty() { None } else { Some(value) },
         source_file: source_file.to_string(),
         line_number: line_number as i64,
+        effective,
     })
 }
 

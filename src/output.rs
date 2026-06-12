@@ -1,7 +1,8 @@
 use crate::models::{
     BaselineDiffRecord, BaselineRecord, BaselineRiskRecord, DetailedDatabaseStats,
     HostDetailRecord, HostRecord, KeyDetailRecord, KeyLocationRecord, KeySummaryRecord,
-    RiskExceptionRecord, RiskRecord, SudoRuleRecord, UserDetailRecord, UserSummaryRecord,
+    RiskExceptionRecord, RiskRecord, ScanRunDetailRecord, ScanRunRecord, SudoRuleRecord,
+    UserDetailRecord, UserSummaryRecord,
 };
 use std::fmt::Write;
 
@@ -107,6 +108,24 @@ pub fn format_host_detail_text(detail: &HostDetailRecord) -> String {
     .expect("writing to String cannot fail");
     writeln!(output, "IP: {}", host.ip_address).expect("writing to String cannot fail");
     writeln!(output, "Port: {}", host.port).expect("writing to String cannot fail");
+    if host.os_family.is_some() || host.os_version.is_some() {
+        writeln!(
+            output,
+            "OS: {} {}",
+            host.os_family.as_deref().unwrap_or("-"),
+            host.os_version.as_deref().unwrap_or("-")
+        )
+        .expect("writing to String cannot fail");
+    }
+    if host.environment.is_some() || host.criticality.is_some() {
+        writeln!(
+            output,
+            "Metadata: environment={} criticality={}",
+            host.environment.as_deref().unwrap_or("-"),
+            host.criticality.as_deref().unwrap_or("-")
+        )
+        .expect("writing to String cannot fail");
+    }
     writeln!(output, "SSH open: {}", yes_no(host.ssh_open)).expect("writing to String cannot fail");
     write_optional_section(&mut output, "SSH banner", host.ssh_banner.as_deref());
 
@@ -128,6 +147,79 @@ pub fn format_host_detail_text(detail: &HostDetailRecord) -> String {
             output,
             "- [{}] {} {}",
             risk.severity, risk.risk_code, risk.title
+        )
+        .expect("writing to String cannot fail");
+    }
+
+    output
+}
+
+pub fn format_scan_run_list_text(runs: &[ScanRunRecord]) -> String {
+    let mut output = String::new();
+    if runs.is_empty() {
+        output.push_str("No scan runs found.\n");
+        return output;
+    }
+
+    writeln!(
+        output,
+        "{:<5} {:<11} {:<10} {:<24} {:<24} OPERATOR",
+        "ID", "MODE", "STATUS", "STARTED", "FINISHED"
+    )
+    .expect("writing to String cannot fail");
+
+    for run in runs {
+        writeln!(
+            output,
+            "{:<5} {:<11} {:<10} {:<24} {:<24} {}",
+            run.id,
+            truncate(&run.mode, 11),
+            truncate(&run.status, 10),
+            truncate(&run.started_at, 24),
+            truncate(run.finished_at.as_deref().unwrap_or("-"), 24),
+            run.operator.as_deref().unwrap_or("-")
+        )
+        .expect("writing to String cannot fail");
+    }
+
+    output
+}
+
+pub fn format_scan_run_detail_text(detail: &ScanRunDetailRecord) -> String {
+    let mut output = String::new();
+    let run = &detail.run;
+
+    writeln!(output, "ID: {}", run.id).expect("writing to String cannot fail");
+    writeln!(output, "UUID: {}", run.run_uuid).expect("writing to String cannot fail");
+    writeln!(output, "Mode: {}", run.mode).expect("writing to String cannot fail");
+    writeln!(output, "Status: {}", run.status).expect("writing to String cannot fail");
+    writeln!(output, "Started: {}", run.started_at).expect("writing to String cannot fail");
+    writeln!(
+        output,
+        "Finished: {}",
+        run.finished_at.as_deref().unwrap_or("-")
+    )
+    .expect("writing to String cannot fail");
+    writeln!(
+        output,
+        "Operator: {}",
+        run.operator.as_deref().unwrap_or("-")
+    )
+    .expect("writing to String cannot fail");
+    if let Some(sudo_enabled) = run.sudo_enabled {
+        writeln!(output, "Sudo enabled: {}", yes_no(sudo_enabled))
+            .expect("writing to String cannot fail");
+    }
+    write_optional_section(&mut output, "Targets", run.targets_json.as_deref());
+    write_optional_section(&mut output, "Summary", run.summary_json.as_deref());
+    write_optional_section(&mut output, "Error", run.error_message.as_deref());
+
+    writeln!(output, "\nEvents: {}", detail.events.len()).expect("writing to String cannot fail");
+    for event in &detail.events {
+        writeln!(
+            output,
+            "- {} {}: {}",
+            event.created_at, event.event_type, event.message
         )
         .expect("writing to String cannot fail");
     }
@@ -551,6 +643,10 @@ mod tests {
             fqdn: None,
             ip_address: "192.0.2.10".to_string(),
             port: 22,
+            os_family: None,
+            os_version: None,
+            environment: None,
+            criticality: None,
             ssh_open: true,
             ssh_banner: None,
             source: "test".to_string(),

@@ -19,6 +19,10 @@ pub fn import_hosts_file(path: &Path, db_path: &Path) -> Result<ImportSummary> {
                 fqdn: None,
                 ip_address: alias.ip_address.clone(),
                 port: 22,
+                os_family: None,
+                os_version: None,
+                environment: None,
+                criticality: None,
                 ssh_open: false,
             });
 

@@ -1,15 +1,15 @@
 use crate::baseline;
 use crate::discovery::DiscoveryResult;
 use crate::models::{
-    BaselineDiffRecord, BaselineRecord, BaselineRiskRecord, BaselineSummary,
+    AuditEventRecord, BaselineDiffRecord, BaselineRecord, BaselineRiskRecord, BaselineSummary,
     DataQualityFindingRecord, DatabaseStats, DetailedDatabaseStats, GeneratedRisk, GraphEdgeRecord,
     GraphNodeRecord, HostAliasRecord, HostDetailRecord, HostQuery, HostRecord, HostScanResult,
     ImportSummary, ImportedHost, KeyDetailRecord, KeyLocationRecord, KeySummaryRecord,
     KnownHostEntryRecord, NewRiskException, NormalizedAnalysis, ParsedAuthorizedKey, ParsedGroup,
-    ParsedHostAlias, ParsedPublicKey, ParsedUser, RawEvidenceForAnalysis, RawEvidenceRecord,
-    RemoteScanSummary, RiskExceptionRecord, RiskQuery, RiskRecord, ScanRunSummary,
-    SshClientConfigEntryRecord, SudoRuleRecord, UserAccountRecord, UserDetailRecord, UserQuery,
-    UserSummaryRecord,
+    ParsedHostAlias, ParsedHostMetadata, ParsedPublicKey, ParsedUser, RawEvidenceForAnalysis,
+    RawEvidenceRecord, RemoteScanSummary, RiskExceptionRecord, RiskQuery, RiskRecord,
+    ScanRunDetailRecord, ScanRunRecord, ScanRunSummary, SshClientConfigEntryRecord, SudoRuleRecord,
+    UserAccountRecord, UserDetailRecord, UserQuery, UserSummaryRecord,
 };
 use crate::target::{hostname_hint, is_ip_address, parse_host_target};
 use anyhow::{Context, Result, bail};
@@ -405,6 +405,98 @@ pub fn update_hostnames_from_evidence(path: &Path) -> Result<usize> {
     Ok(updated)
 }
 
+pub fn list_scan_runs(path: &Path, limit: usize) -> Result<Vec<ScanRunRecord>> {
+    initialize_database(path)?;
+    let connection = Connection::open(path)
+        .with_context(|| format!("failed to open database at {}", path.display()))?;
+    apply_pragmas(&connection)?;
+    list_scan_runs_connection(&connection, limit)
+}
+
+pub fn list_scan_runs_read_only(path: &Path, limit: usize) -> Result<Vec<ScanRunRecord>> {
+    with_read_only_connection(path, |connection| {
+        list_scan_runs_connection(connection, limit)
+    })
+}
+
+fn list_scan_runs_connection(connection: &Connection, limit: usize) -> Result<Vec<ScanRunRecord>> {
+    let mut statement = connection.prepare(
+        "SELECT id, run_uuid, mode, started_at, finished_at, status, targets_json,
+                operator, sudo_enabled, summary_json, error_message
+         FROM scan_runs
+         ORDER BY started_at DESC, id DESC
+         LIMIT ?1",
+    )?;
+    let rows = statement.query_map(params![limit as i64], map_scan_run_record)?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .context("failed to list scan runs")
+}
+
+pub fn get_scan_run(path: &Path, id_or_uuid: &str) -> Result<Option<ScanRunDetailRecord>> {
+    initialize_database(path)?;
+    let connection = Connection::open(path)
+        .with_context(|| format!("failed to open database at {}", path.display()))?;
+    apply_pragmas(&connection)?;
+    get_scan_run_connection(&connection, id_or_uuid)
+}
+
+pub fn get_scan_run_read_only(
+    path: &Path,
+    id_or_uuid: &str,
+) -> Result<Option<ScanRunDetailRecord>> {
+    with_read_only_connection(path, |connection| {
+        get_scan_run_connection(connection, id_or_uuid)
+    })
+}
+
+fn get_scan_run_connection(
+    connection: &Connection,
+    id_or_uuid: &str,
+) -> Result<Option<ScanRunDetailRecord>> {
+    let run = if let Ok(id) = id_or_uuid.parse::<i64>() {
+        let mut statement = connection.prepare(
+            "SELECT id, run_uuid, mode, started_at, finished_at, status, targets_json,
+                    operator, sudo_enabled, summary_json, error_message
+             FROM scan_runs
+             WHERE id = ?1",
+        )?;
+        statement
+            .query_row(params![id], map_scan_run_record)
+            .optional()?
+    } else {
+        let mut statement = connection.prepare(
+            "SELECT id, run_uuid, mode, started_at, finished_at, status, targets_json,
+                    operator, sudo_enabled, summary_json, error_message
+             FROM scan_runs
+             WHERE run_uuid = ?1",
+        )?;
+        statement
+            .query_row(params![id_or_uuid], map_scan_run_record)
+            .optional()?
+    };
+
+    let Some(run) = run else {
+        return Ok(None);
+    };
+    let events = list_audit_events_for_scan_run(connection, run.id)?;
+    Ok(Some(ScanRunDetailRecord { run, events }))
+}
+
+fn list_audit_events_for_scan_run(
+    connection: &Connection,
+    scan_run_id: i64,
+) -> Result<Vec<AuditEventRecord>> {
+    let mut statement = connection.prepare(
+        "SELECT id, scan_run_id, event_type, message, metadata_json, created_at
+         FROM audit_events
+         WHERE scan_run_id = ?1
+         ORDER BY id",
+    )?;
+    let rows = statement.query_map(params![scan_run_id], map_audit_event_record)?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .context("failed to list audit events")
+}
+
 pub fn list_user_nodes_by_username(path: &Path, username: &str) -> Result<Vec<GraphNodeRecord>> {
     initialize_database(path)?;
     let connection = Connection::open(path)
@@ -616,17 +708,22 @@ pub fn replace_normalized_analysis(path: &Path, analysis: &NormalizedAnalysis) -
         }
     }
 
+    for metadata in &analysis.host_metadata {
+        update_host_metadata(&tx, metadata)?;
+    }
+
     for entry in &analysis.sshd_config_entries {
         tx.execute(
             "INSERT INTO sshd_config_entries (
                 host_id, key, value, source_file, line_number, effective
-            ) VALUES (?1, ?2, ?3, ?4, ?5, 1)",
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![
                 entry.host_id,
                 entry.key,
                 entry.value,
                 entry.source_file,
-                entry.line_number
+                entry.line_number,
+                entry.effective as i64
             ],
         )?;
     }
@@ -845,6 +942,7 @@ fn list_hosts_connection(connection: &Connection, query: &HostQuery) -> Result<V
         "SELECT
             h.id, h.hostname, h.fqdn, h.ip_address, h.port, h.ssh_open, h.ssh_banner,
             h.source, h.first_seen, h.last_seen,
+            h.os_family, h.os_version, h.environment, h.criticality,
             COUNT(DISTINCT u.id) AS user_count,
             COUNT(DISTINCT r.id) AS risk_count
          FROM hosts h
@@ -2031,11 +2129,16 @@ fn upsert_imported_host(connection: &Connection, host: &ImportedHost) -> Result<
     let now = Utc::now().to_rfc3339();
     connection.execute(
         "INSERT INTO hosts (
-            hostname, fqdn, ip_address, port, ssh_open, first_seen, last_seen, source
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'import')
+            hostname, fqdn, ip_address, port, os_family, os_version, environment,
+            criticality, ssh_open, first_seen, last_seen, source
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'import')
         ON CONFLICT(ip_address, port) DO UPDATE SET
             hostname = COALESCE(excluded.hostname, hosts.hostname),
             fqdn = COALESCE(excluded.fqdn, hosts.fqdn),
+            os_family = COALESCE(excluded.os_family, hosts.os_family),
+            os_version = COALESCE(excluded.os_version, hosts.os_version),
+            environment = COALESCE(excluded.environment, hosts.environment),
+            criticality = COALESCE(excluded.criticality, hosts.criticality),
             ssh_open = CASE WHEN excluded.ssh_open = 1 THEN 1 ELSE hosts.ssh_open END,
             last_seen = excluded.last_seen,
             source = excluded.source",
@@ -2044,6 +2147,10 @@ fn upsert_imported_host(connection: &Connection, host: &ImportedHost) -> Result<
             host.fqdn,
             host.ip_address,
             host.port,
+            host.os_family,
+            host.os_version,
+            host.environment,
+            host.criticality,
             host.ssh_open as i64,
             now,
             now
@@ -2151,6 +2258,17 @@ fn clear_normalized_tables(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn update_host_metadata(connection: &Connection, metadata: &ParsedHostMetadata) -> Result<()> {
+    connection.execute(
+        "UPDATE hosts SET
+            os_family = COALESCE(?1, os_family),
+            os_version = COALESCE(?2, os_version)
+         WHERE id = ?3",
+        params![metadata.os_family, metadata.os_version, metadata.host_id],
+    )?;
+    Ok(())
+}
+
 fn upsert_user(connection: &Connection, user: &ParsedUser) -> Result<i64> {
     let now = Utc::now().to_rfc3339();
     connection.execute(
@@ -2242,14 +2360,16 @@ fn upsert_public_key(connection: &Connection, public_key: &ParsedPublicKey) -> R
     let now = Utc::now().to_rfc3339();
     connection.execute(
         "INSERT INTO public_keys (
-            key_type, fingerprint_sha256, key_comment, normalized_public_key, first_seen, last_seen
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            key_type, fingerprint_sha256, key_bits, key_comment, normalized_public_key, first_seen, last_seen
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
         ON CONFLICT(fingerprint_sha256) DO UPDATE SET
+            key_bits = COALESCE(excluded.key_bits, public_keys.key_bits),
             key_comment = COALESCE(excluded.key_comment, public_keys.key_comment),
             last_seen = excluded.last_seen",
         params![
             public_key.key_type,
             public_key.fingerprint_sha256,
+            public_key.key_bits,
             public_key.key_comment,
             public_key.normalized_public_key,
             now,
@@ -2437,6 +2557,7 @@ fn find_host_record(connection: &Connection, target: &str) -> Result<Option<Host
             "SELECT
                 h.id, h.hostname, h.fqdn, h.ip_address, h.port, h.ssh_open, h.ssh_banner,
                 h.source, h.first_seen, h.last_seen,
+                h.os_family, h.os_version, h.environment, h.criticality,
                 COUNT(DISTINCT u.id) AS user_count,
                 COUNT(DISTINCT r.id) AS risk_count
              FROM hosts h
@@ -2455,6 +2576,7 @@ fn find_host_record(connection: &Connection, target: &str) -> Result<Option<Host
         "SELECT
             h.id, h.hostname, h.fqdn, h.ip_address, h.port, h.ssh_open, h.ssh_banner,
             h.source, h.first_seen, h.last_seen,
+            h.os_family, h.os_version, h.environment, h.criticality,
             COUNT(DISTINCT u.id) AS user_count,
             COUNT(DISTINCT r.id) AS risk_count
          FROM hosts h
@@ -2478,13 +2600,44 @@ fn map_host_record(row: &Row<'_>) -> rusqlite::Result<HostRecord> {
         fqdn: row.get(2)?,
         ip_address: row.get(3)?,
         port: row.get(4)?,
+        os_family: row.get(10)?,
+        os_version: row.get(11)?,
+        environment: row.get(12)?,
+        criticality: row.get(13)?,
         ssh_open: row.get::<_, i64>(5)? != 0,
         ssh_banner: row.get(6)?,
         source: row.get(7)?,
         first_seen: row.get(8)?,
         last_seen: row.get(9)?,
-        user_count: i64_to_usize(row.get(10)?),
-        risk_count: i64_to_usize(row.get(11)?),
+        user_count: i64_to_usize(row.get(14)?),
+        risk_count: i64_to_usize(row.get(15)?),
+    })
+}
+
+fn map_scan_run_record(row: &Row<'_>) -> rusqlite::Result<ScanRunRecord> {
+    Ok(ScanRunRecord {
+        id: row.get(0)?,
+        run_uuid: row.get(1)?,
+        mode: row.get(2)?,
+        started_at: row.get(3)?,
+        finished_at: row.get(4)?,
+        status: row.get(5)?,
+        targets_json: row.get(6)?,
+        operator: row.get(7)?,
+        sudo_enabled: row.get::<_, Option<i64>>(8)?.map(|value| value != 0),
+        summary_json: row.get(9)?,
+        error_message: row.get(10)?,
+    })
+}
+
+fn map_audit_event_record(row: &Row<'_>) -> rusqlite::Result<AuditEventRecord> {
+    Ok(AuditEventRecord {
+        id: row.get(0)?,
+        scan_run_id: row.get(1)?,
+        event_type: row.get(2)?,
+        message: row.get(3)?,
+        metadata_json: row.get(4)?,
+        created_at: row.get(5)?,
     })
 }
 

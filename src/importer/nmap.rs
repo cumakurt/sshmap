@@ -31,6 +31,10 @@ pub fn import_nmap_xml(path: &Path, db_path: &Path) -> Result<crate::models::Imp
             fqdn: hostname,
             ip_address,
             port: 22,
+            os_family: None,
+            os_version: None,
+            environment: None,
+            criticality: None,
             ssh_open: true,
         });
     }

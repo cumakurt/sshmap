@@ -53,6 +53,10 @@ pub fn import_ansible_inventory(
             },
             ip_address,
             port,
+            os_family: None,
+            os_version: None,
+            environment: (!current_group.is_empty()).then(|| current_group.clone()),
+            criticality: None,
             ssh_open: true,
         });
     }

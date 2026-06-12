@@ -85,6 +85,79 @@ pub fn remediation_for_code(risk_code: &str) -> Option<RemediationRecord> {
             rollback: vec!["Restore previous forwarding settings for approved workflows.".to_string()],
             ansible: None,
         },
+        "SSH_MAX_AUTH_TRIES_HIGH" => RemediationRecord {
+            risk_code: code,
+            title: "Lower SSH authentication retry count".to_string(),
+            verify: vec!["sshd -T | grep -i '^maxauthtries'".to_string()],
+            fix: vec!["Set MaxAuthTries to 3 or 4 and reload SSH.".to_string()],
+            rollback: vec!["Restore the previous MaxAuthTries value and reload SSH.".to_string()],
+            ansible: None,
+        },
+        "SSH_PERMIT_USER_ENVIRONMENT" => RemediationRecord {
+            risk_code: code,
+            title: "Disable user-controlled SSH environment".to_string(),
+            verify: vec!["sshd -T | grep -i '^permituserenvironment'".to_string()],
+            fix: vec!["Set PermitUserEnvironment no and reload SSH.".to_string()],
+            rollback: vec![
+                "Restore the previous PermitUserEnvironment value for approved use cases."
+                    .to_string(),
+            ],
+            ansible: None,
+        },
+        "SSH_X11_FORWARDING_ENABLED" => RemediationRecord {
+            risk_code: code,
+            title: "Disable SSH X11 forwarding".to_string(),
+            verify: vec!["sshd -T | grep -i '^x11forwarding'".to_string()],
+            fix: vec!["Set X11Forwarding no and reload SSH.".to_string()],
+            rollback: vec!["Restore X11Forwarding for approved desktop workflows.".to_string()],
+            ansible: None,
+        },
+        "SSHD_EFFECTIVE_CONFIG_MISMATCH" => RemediationRecord {
+            risk_code: code,
+            title: "Reconcile file and effective SSHD configuration".to_string(),
+            verify: vec![
+                "sshd -T | sort".to_string(),
+                "grep -Rni '<reported directive>' /etc/ssh/sshd_config /etc/ssh/sshd_config.d 2>/dev/null".to_string(),
+            ],
+            fix: vec![
+                "Review Include and Match blocks that change the effective value.".to_string(),
+                "Move the intended setting into a deterministic drop-in and reload SSH.".to_string(),
+            ],
+            rollback: vec!["Restore the previous drop-in or directive ordering.".to_string()],
+            ansible: None,
+        },
+        "SSH_WEAK_KEY_ALGORITHM" | "SSH_LEGACY_RSA_KEY" => RemediationRecord {
+            risk_code: code,
+            title: "Rotate weak SSH authorized keys".to_string(),
+            verify: vec!["Review the reported authorized_keys file and fingerprint.".to_string()],
+            fix: vec![
+                "Replace DSA and legacy ssh-rsa keys with Ed25519 or RSA >= 3072-bit keys."
+                    .to_string(),
+                "Remove the old public key after confirming replacement access.".to_string(),
+            ],
+            rollback: vec!["Temporarily restore the previous public key if replacement access fails.".to_string()],
+            ansible: None,
+        },
+        "SSH_CERTIFICATE_AUTHORIZED_KEY" => RemediationRecord {
+            risk_code: code,
+            title: "Review SSH certificate trust".to_string(),
+            verify: vec!["Inspect certificate principals, CA trust, and validity policy.".to_string()],
+            fix: vec![
+                "Constrain certificate principals and CA trust to required users and hosts."
+                    .to_string(),
+                "Use short certificate lifetimes and monitored CA issuance.".to_string(),
+            ],
+            rollback: vec!["Restore previous authorized_keys certificate entries if access breaks.".to_string()],
+            ansible: None,
+        },
+        "SUDO_WILDCARD_COMMAND" => RemediationRecord {
+            risk_code: code,
+            title: "Replace wildcard sudoers commands".to_string(),
+            verify: vec!["Inspect the reported sudoers file and command pattern.".to_string()],
+            fix: vec!["Use exact command paths and constrained arguments instead of wildcards.".to_string()],
+            rollback: vec!["Restore the previous sudoers entry if the allowlist is incomplete.".to_string()],
+            ansible: None,
+        },
         "SSH_AUTHORIZED_KEY_WITHOUT_RESTRICTIONS"
         | "SSH_ROOT_AUTHORIZED_KEY_WITHOUT_RESTRICTIONS" => RemediationRecord {
             risk_code: code,
@@ -129,7 +202,7 @@ pub fn generate_risks(analysis: &NormalizedAnalysis, policy: &RiskPolicy) -> Vec
 fn generate_sshd_config_risks(analysis: &NormalizedAnalysis) -> Vec<GeneratedRisk> {
     let mut risks = Vec::new();
 
-    for entry in &analysis.sshd_config_entries {
+    for entry in sshd_entries_for_risk(analysis) {
         let key = entry.key.to_ascii_lowercase();
         let value = entry
             .value
@@ -237,11 +310,130 @@ fn generate_sshd_config_risks(analysis: &NormalizedAnalysis) -> Vec<GeneratedRis
                 ),
                 recommendation: "Disable GatewayPorts unless explicitly required.",
             })),
+            ("maxauthtries", value) if value.parse::<i64>().is_ok_and(|tries| tries > 4) => {
+                risks.push(host_risk(HostRiskInput {
+                    host_id: entry.host_id,
+                    risk_code: "SSH_MAX_AUTH_TRIES_HIGH",
+                    severity: "MEDIUM",
+                    score: 45,
+                    title: "SSH MaxAuthTries is high",
+                    description: "The SSH daemon permits many authentication attempts per connection.",
+                    impact: "Higher retry counts increase the online brute-force surface and slow lockout detection.",
+                    evidence: format!(
+                        "{}:{} sets MaxAuthTries {}",
+                        entry.source_file, entry.line_number, value
+                    ),
+                    recommendation: "Set MaxAuthTries to 3 or 4 unless there is a documented operational need.",
+                }));
+            }
+            ("permituserenvironment", "yes") => risks.push(host_risk(HostRiskInput {
+                host_id: entry.host_id,
+                risk_code: "SSH_PERMIT_USER_ENVIRONMENT",
+                severity: "HIGH",
+                score: 70,
+                title: "User-controlled SSH environment is enabled",
+                description: "The SSH daemon allows users to set environment variables through SSH.",
+                impact: "User-controlled environment variables can bypass assumptions in forced commands or privileged wrappers.",
+                evidence: format!(
+                    "{}:{} sets PermitUserEnvironment yes",
+                    entry.source_file, entry.line_number
+                ),
+                recommendation: "Set PermitUserEnvironment to no unless tightly controlled.",
+            })),
+            ("x11forwarding", "yes") => risks.push(host_risk(HostRiskInput {
+                host_id: entry.host_id,
+                risk_code: "SSH_X11_FORWARDING_ENABLED",
+                severity: "MEDIUM",
+                score: 45,
+                title: "X11 forwarding is enabled",
+                description: "The SSH daemon allows X11 forwarding.",
+                impact: "Compromised sessions may expose desktop authentication channels or expand lateral movement options.",
+                evidence: format!(
+                    "{}:{} sets X11Forwarding yes",
+                    entry.source_file, entry.line_number
+                ),
+                recommendation: "Disable X11Forwarding unless it is explicitly required.",
+            })),
             _ => {}
         }
     }
 
+    risks.extend(generate_sshd_effective_mismatch_risks(analysis));
     risks
+}
+
+fn sshd_entries_for_risk(
+    analysis: &NormalizedAnalysis,
+) -> Vec<&crate::models::ParsedSshdConfigEntry> {
+    let hosts_with_effective = analysis
+        .sshd_config_entries
+        .iter()
+        .filter(|entry| entry.effective)
+        .map(|entry| entry.host_id)
+        .collect::<std::collections::BTreeSet<_>>();
+
+    analysis
+        .sshd_config_entries
+        .iter()
+        .filter(|entry| {
+            if hosts_with_effective.contains(&entry.host_id) {
+                entry.effective
+            } else {
+                !entry.effective
+            }
+        })
+        .collect()
+}
+
+fn generate_sshd_effective_mismatch_risks(analysis: &NormalizedAnalysis) -> Vec<GeneratedRisk> {
+    const WATCHED_KEYS: &[&str] = &[
+        "permitrootlogin",
+        "passwordauthentication",
+        "permitemptypasswords",
+        "allowtcpforwarding",
+        "allowagentforwarding",
+        "gatewayports",
+        "maxauthtries",
+        "permituserenvironment",
+        "x11forwarding",
+    ];
+
+    let mut by_host_key: BTreeMap<(i64, String), (Option<String>, Option<String>)> =
+        BTreeMap::new();
+    for entry in &analysis.sshd_config_entries {
+        let key = entry.key.to_ascii_lowercase();
+        if !WATCHED_KEYS.contains(&key.as_str()) {
+            continue;
+        }
+        let values = by_host_key.entry((entry.host_id, key)).or_default();
+        if entry.effective {
+            values.1 = entry.value.clone();
+        } else {
+            values.0 = entry.value.clone();
+        }
+    }
+
+    by_host_key
+        .into_iter()
+        .filter_map(|((host_id, key), (file_value, effective_value))| {
+            let file_value = file_value?;
+            let effective_value = effective_value?;
+            if file_value.eq_ignore_ascii_case(&effective_value) {
+                return None;
+            }
+            Some(host_risk(HostRiskInput {
+                host_id,
+                risk_code: "SSHD_EFFECTIVE_CONFIG_MISMATCH",
+                severity: "LOW",
+                score: 30,
+                title: "SSHD file config differs from effective config",
+                description: "The parsed sshd_config file value differs from sshd -T effective output.",
+                impact: "Drop-ins, defaults, or Match blocks may make file review misleading.",
+                evidence: format!("{key}: file={file_value}, effective={effective_value}"),
+                recommendation: "Review sshd -T output together with included files and Match blocks before remediation.",
+            }))
+        })
+        .collect()
 }
 
 fn generate_user_account_risks(analysis: &NormalizedAnalysis) -> Vec<GeneratedRisk> {
@@ -347,7 +539,103 @@ fn generate_authorized_key_risks(analysis: &NormalizedAnalysis) -> Vec<Generated
             }),
     );
 
+    risks.extend(analysis.authorized_keys.iter().filter_map(weak_key_risk));
+
     risks
+}
+
+fn weak_key_risk(entry: &ParsedAuthorizedKey) -> Option<GeneratedRisk> {
+    let key_type = entry.public_key.key_type.as_str();
+    if key_type == "ssh-dss" {
+        return Some(GeneratedRisk {
+            host_id: Some(entry.host_id),
+            username: Some(entry.username.clone()),
+            public_key_fingerprint: Some(entry.public_key.fingerprint_sha256.clone()),
+            risk_code: "SSH_WEAK_KEY_ALGORITHM".to_string(),
+            severity: "HIGH".to_string(),
+            score: 78,
+            confidence: "HIGH".to_string(),
+            title: "Authorized key uses DSA".to_string(),
+            description: "An authorized_keys entry uses the legacy ssh-dss algorithm.".to_string(),
+            impact: "DSA keys are deprecated and may be disabled by modern SSH clients and policy baselines.".to_string(),
+            evidence: format!(
+                "{}:{} contains {} {}",
+                entry.source_file,
+                entry.line_number,
+                key_type,
+                entry.public_key.fingerprint_sha256
+            ),
+            recommendation: "Replace DSA keys with Ed25519 or RSA keys of at least 3072 bits.".to_string(),
+        });
+    }
+
+    if key_type == "ssh-rsa" {
+        let bits = entry.public_key.key_bits.unwrap_or_default();
+        let (risk_code, severity, score, title, description) = if bits > 0 && bits < 2048 {
+            (
+                "SSH_LEGACY_RSA_KEY",
+                "HIGH",
+                76,
+                "Authorized key uses weak RSA length",
+                "An authorized_keys entry uses an RSA key smaller than 2048 bits.",
+            )
+        } else {
+            (
+                "SSH_WEAK_KEY_ALGORITHM",
+                "MEDIUM",
+                58,
+                "Authorized key uses legacy ssh-rsa",
+                "An authorized_keys entry uses the legacy ssh-rsa key type.",
+            )
+        };
+
+        return Some(GeneratedRisk {
+            host_id: Some(entry.host_id),
+            username: Some(entry.username.clone()),
+            public_key_fingerprint: Some(entry.public_key.fingerprint_sha256.clone()),
+            risk_code: risk_code.to_string(),
+            severity: severity.to_string(),
+            score,
+            confidence: "HIGH".to_string(),
+            title: title.to_string(),
+            description: description.to_string(),
+            impact: "Legacy RSA/SHA-1 compatibility can weaken SSH authentication posture and may fail modern compliance baselines.".to_string(),
+            evidence: format!(
+                "{}:{} contains {} {} ({} bits)",
+                entry.source_file,
+                entry.line_number,
+                key_type,
+                entry.public_key.fingerprint_sha256,
+                if bits > 0 { bits.to_string() } else { "unknown".to_string() }
+            ),
+            recommendation: "Prefer Ed25519 keys or RSA keys of at least 3072 bits; disable SHA-1 ssh-rsa signatures where possible.".to_string(),
+        });
+    }
+
+    if key_type.ends_with("-cert-v01@openssh.com") {
+        return Some(GeneratedRisk {
+            host_id: Some(entry.host_id),
+            username: Some(entry.username.clone()),
+            public_key_fingerprint: Some(entry.public_key.fingerprint_sha256.clone()),
+            risk_code: "SSH_CERTIFICATE_AUTHORIZED_KEY".to_string(),
+            severity: "LOW".to_string(),
+            score: 30,
+            confidence: "MEDIUM".to_string(),
+            title: "Authorized key is an SSH certificate".to_string(),
+            description: "An authorized_keys entry accepts an SSH certificate key type.".to_string(),
+            impact: "Certificate-based SSH should be reviewed for CA trust scope, principals, and expiry policy.".to_string(),
+            evidence: format!(
+                "{}:{} contains {} {}",
+                entry.source_file,
+                entry.line_number,
+                key_type,
+                entry.public_key.fingerprint_sha256
+            ),
+            recommendation: "Review SSH CA policy, principal constraints, and certificate validity periods.".to_string(),
+        });
+    }
+
+    None
 }
 
 fn generate_sudo_risks(analysis: &NormalizedAnalysis) -> Vec<GeneratedRisk> {
@@ -414,6 +702,29 @@ fn sudo_rule_to_risk(rule: &ParsedSudoRule) -> Option<GeneratedRisk> {
                 rule.source_file, rule.line_number, rule.subject
             ),
             recommendation: "Replace group-wide ALL rules with the smallest required command allowlist.".to_string(),
+        });
+    }
+
+    if command.contains('*') {
+        return Some(GeneratedRisk {
+            host_id: Some(rule.host_id),
+            username: (rule.subject_type == "user").then(|| rule.subject.clone()),
+            public_key_fingerprint: None,
+            risk_code: "SUDO_WILDCARD_COMMAND".to_string(),
+            severity: "MEDIUM".to_string(),
+            score: 58,
+            confidence: "HIGH".to_string(),
+            title: "Sudo rule contains a wildcard command".to_string(),
+            description: "A sudoers rule grants access to a command pattern with a wildcard."
+                .to_string(),
+            impact: "Wildcard command patterns can be broader than intended and may allow argument or path abuse.".to_string(),
+            evidence: format!(
+                "{}:{} grants {} access to {}",
+                rule.source_file, rule.line_number, rule.subject, command
+            ),
+            recommendation:
+                "Replace wildcard sudoers entries with exact command paths and constrained arguments."
+                    .to_string(),
         });
     }
 
@@ -772,6 +1083,7 @@ mod tests {
                     value: Some("yes".to_string()),
                     source_file: "/etc/ssh/sshd_config".to_string(),
                     line_number: 1,
+                    effective: false,
                 },
                 ParsedSshdConfigEntry {
                     host_id: 1,
@@ -779,6 +1091,7 @@ mod tests {
                     value: Some("yes".to_string()),
                     source_file: "/etc/ssh/sshd_config".to_string(),
                     line_number: 2,
+                    effective: false,
                 },
             ],
             ..Default::default()
@@ -833,6 +1146,57 @@ mod tests {
     }
 
     #[test]
+    fn effective_sshd_config_takes_precedence_and_flags_mismatch() {
+        let analysis = NormalizedAnalysis {
+            sshd_config_entries: vec![
+                ParsedSshdConfigEntry {
+                    host_id: 1,
+                    key: "PasswordAuthentication".to_string(),
+                    value: Some("no".to_string()),
+                    source_file: "/etc/ssh/sshd_config".to_string(),
+                    line_number: 10,
+                    effective: false,
+                },
+                ParsedSshdConfigEntry {
+                    host_id: 1,
+                    key: "passwordauthentication".to_string(),
+                    value: Some("yes".to_string()),
+                    source_file: "sshd -T".to_string(),
+                    line_number: 1,
+                    effective: true,
+                },
+            ],
+            ..Default::default()
+        };
+
+        let codes = generate_risks(&analysis, &RiskPolicy::default())
+            .into_iter()
+            .map(|risk| risk.risk_code)
+            .collect::<BTreeSet<_>>();
+
+        assert!(codes.contains("SSH_PASSWORD_AUTH_ENABLED"));
+        assert!(codes.contains("SSHD_EFFECTIVE_CONFIG_MISMATCH"));
+    }
+
+    #[test]
+    fn generates_legacy_rsa_key_risk() {
+        let mut key = authorized_key(1, "deploy", "SHA256:rsa");
+        key.public_key.key_type = "ssh-rsa".to_string();
+        key.public_key.key_bits = Some(1024);
+        let analysis = NormalizedAnalysis {
+            authorized_keys: vec![key],
+            ..Default::default()
+        };
+
+        let codes = generate_risks(&analysis, &RiskPolicy::default())
+            .into_iter()
+            .map(|risk| risk.risk_code)
+            .collect::<BTreeSet<_>>();
+
+        assert!(codes.contains("SSH_LEGACY_RSA_KEY"));
+    }
+
+    #[test]
     fn generates_key_reuse_risk_at_five_hosts() {
         let analysis = NormalizedAnalysis {
             authorized_keys: (1..=5)
@@ -857,6 +1221,7 @@ mod tests {
             public_key: ParsedPublicKey {
                 key_type: "ssh-ed25519".to_string(),
                 fingerprint_sha256: fingerprint.to_string(),
+                key_bits: Some(256),
                 key_comment: None,
                 normalized_public_key: format!("ssh-ed25519 {fingerprint}"),
             },

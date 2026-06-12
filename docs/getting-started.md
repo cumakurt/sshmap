@@ -22,6 +22,14 @@ sshmap risks list --db sshmap.db
 sshmap report create --format html --output report.html --db sshmap.db
 ```
 
+Run the same chain with orchestration:
+
+```bash
+sshmap workflow run --file hosts.txt --user audituser --key ~/.ssh/audit_ed25519 \
+  --sudo --enrich-dns --reverse-dns --db sshmap.db
+sshmap scan-runs list --db sshmap.db
+```
+
 Scan through a jump host with either transport:
 
 ```bash

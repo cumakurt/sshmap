@@ -105,16 +105,22 @@ pub fn write_csv_report(
 }
 
 fn render_hosts_csv(report: &ReportData) -> String {
-    let mut csv = String::from("id,hostname,fqdn,ip_address,port,ssh_open,user_count,risk_count\n");
+    let mut csv = String::from(
+        "id,hostname,fqdn,ip_address,port,os_family,os_version,environment,criticality,ssh_open,user_count,risk_count\n",
+    );
     for host in &report.hosts {
         writeln!(
             csv,
-            "{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{},{},{},{},{}",
             host.id,
             crate::csv::field(host.hostname.as_deref().unwrap_or("")),
             crate::csv::field(host.fqdn.as_deref().unwrap_or("")),
             crate::csv::field(&host.ip_address),
             host.port,
+            crate::csv::field(host.os_family.as_deref().unwrap_or("")),
+            crate::csv::field(host.os_version.as_deref().unwrap_or("")),
+            crate::csv::field(host.environment.as_deref().unwrap_or("")),
+            crate::csv::field(host.criticality.as_deref().unwrap_or("")),
             yes_no(host.ssh_open),
             host.user_count,
             host.risk_count
@@ -481,6 +487,10 @@ mod tests {
                 fqdn: None,
                 ip_address: "192.0.2.10".to_string(),
                 port: 22,
+                os_family: None,
+                os_version: None,
+                environment: None,
+                criticality: None,
                 ssh_open: true,
                 ssh_banner: None,
                 source: "test".to_string(),

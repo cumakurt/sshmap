@@ -66,6 +66,8 @@ Optional mapping files translate column names for CSV import:
 sshmap import csv --file hosts.csv --mapping mapping.yaml --db sshmap.db
 ```
 
+CSV inventory may include optional `os_family`, `os_version`, `environment`, and `criticality` columns. Mapping files can rename these columns just like `hostname`, `ip_address`, and `port`.
+
 ## Sensitive Content
 
 Import paths run content through the same redaction pipeline used by live collection. Private key material is stripped before storage.

@@ -1,6 +1,6 @@
 # REST API
 
-`sshmap serve --read-only` exposes a JSON REST API over the SQLite inventory. All endpoints are read-only and open the database with SQLite read-only flags.
+`sshmap serve --read-only` exposes a JSON REST API over the SQLite inventory. GET endpoints are read-only and open the database with SQLite read-only flags. Mutating endpoints are disabled unless `--allow-write-api` is explicitly enabled.
 
 ## Authentication
 
@@ -104,6 +104,9 @@ curl 'http://127.0.0.1:8080/api/risks?severity=CRITICAL&code=SSH_ROOT_LOGIN&limi
 | GET | `/api/graph` | Access graph edges (see query parameters below) |
 | GET | `/api/path?from=...&to=...` | Shortest directed path between graph nodes |
 | GET | `/api/blast-radius?user=...` | Reachable hosts from a user's graph entry points |
+| GET | `/api/scan-runs` | Recorded discovery, scan, local-scan, and import runs |
+| GET | `/api/scan-runs/{id-or-uuid}` | One run with audit events |
+| GET | `/api/diff?from=...&to=latest` | Baseline drift comparison |
 
 ### `GET /api/graph` query parameters
 
@@ -114,6 +117,16 @@ curl 'http://127.0.0.1:8080/api/risks?severity=CRITICAL&code=SSH_ROOT_LOGIN&limi
 `from`, `to`, and `user` parameters on path/blast-radius endpoints must be non-empty. Empty values return HTTP 400.
 
 Graph node references use the same `type:id` or label forms accepted by `sshmap graph path`.
+
+## Optional write API
+
+Write endpoints are disabled unless the server is started with `--allow-write-api`. This mode always requires `--token`.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/api/baselines` | Create a named baseline from current risks (`{"name":"..."}`) |
+| POST | `/api/exceptions` | Add a risk exception (`{"code":"...","reason":"..."}`) |
+| DELETE | `/api/exceptions/{id}` | Remove an exception |
 
 ## Supporting data
 

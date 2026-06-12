@@ -22,10 +22,12 @@ Local scan uses the same evidence model as remote scan:
 
 - Local account and group data
 - `sshd_config`
+- Effective daemon configuration from `sshd -T`
 - User `authorized_keys`
 - `sudoers` when accessible
 - `known_hosts` and user `ssh_config` when accessible
 - `/etc/hosts` aliases
+- OS metadata from `/etc/os-release` and `uname`
 - Public key metadata
 
 The local hostname is recorded as the scanned host.

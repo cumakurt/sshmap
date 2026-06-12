@@ -27,6 +27,10 @@ pub fn import_known_hosts(path: &Path, db_path: &Path) -> Result<crate::models::
                 fqdn: Some(hostname.to_string()),
                 ip_address,
                 port: 22,
+                os_family: None,
+                os_version: None,
+                environment: None,
+                criticality: None,
                 ssh_open: true,
             });
         }

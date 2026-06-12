@@ -96,6 +96,13 @@ fn build_normalized_analysis(raw_evidence: &[RawEvidenceForAnalysis]) -> Normali
                     evidence.host_id,
                 ));
             }
+            "host_metadata" => {
+                if let Some(metadata) =
+                    parser::host_metadata::parse_host_metadata(&evidence.content, evidence.host_id)
+                {
+                    analysis.host_metadata.push(metadata);
+                }
+            }
             "hosts_file" => {
                 for section in split_file_sections(
                     &evidence.content,
@@ -123,6 +130,15 @@ fn build_normalized_analysis(raw_evidence: &[RawEvidenceForAnalysis]) -> Normali
                             &section.source_file,
                         ));
                 }
+            }
+            "sshd_effective_config" => {
+                analysis.sshd_config_entries.extend(
+                    parser::sshd_config::parse_effective_sshd_config(
+                        &evidence.content,
+                        evidence.host_id,
+                        default_source_file(&evidence.source, evidence.evidence_type.as_str()),
+                    ),
+                );
             }
             "authorized_keys" => {
                 for section in split_file_sections(
@@ -199,7 +215,9 @@ fn default_source_file(source: &str, evidence_type: &str) -> &'static str {
         ("sudoers", _) => "/etc/sudoers",
         (_, "passwd") => "getent passwd",
         (_, "group") => "getent group",
+        (_, "host_metadata") => "/etc/os-release",
         (_, "hosts_file") => "/etc/hosts",
+        (_, "sshd_effective_config") => "sshd -T",
         (_, "sshd_config") => "sshd_config",
         (_, "authorized_keys") => "authorized_keys",
         (_, "sudoers") => "sudoers",

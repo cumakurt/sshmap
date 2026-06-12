@@ -34,7 +34,6 @@ Run `sshmap` or `sshmap --help` for the full command reference. Use `sshmap <com
 - [Web Server, API, and Dashboard](#web-server-api-and-dashboard)
 - [End-to-End Workflow](#end-to-end-workflow)
 - [Documentation Index](#documentation-index)
-- [Coding Standard](#coding-standard)
 - [License](#license)
 
 ---
@@ -102,11 +101,12 @@ sshmap discover --targets 10.10.0.0/24 --ports 22,2222 --concurrency 100 --db ss
 
 **Purpose:** Collect read-only SSH security evidence from live hosts using an audit SSH key or agent.
 
-After connecting, SSHMap runs a fixed set of remote commands (passwd, groups, authorized_keys, sshd_config, sudoers, known_hosts, ssh client config, `/etc/hosts`, hostname, etc.). Evidence is stored as raw text in `raw_evidence` and linked to host rows.
+After connecting, SSHMap runs a fixed set of remote commands (passwd, groups, authorized_keys, sshd_config, effective `sshd -T`, sudoers, known_hosts, ssh client config, `/etc/hosts`, `/etc/os-release`, hostname, etc.). Evidence is stored as raw text in `raw_evidence` and linked to host rows.
 
 | Option | What it does |
 |--------|----------------|
 | `--user` / `--key` | SSH identity for authentication |
+| `--users-file` | Repeat collection for multiple SSH usernames with the same key or agent |
 | `--agent` | Use `SSH_AUTH_SOCK` instead of a key file |
 | `--sudo` | Prefix commands that need root-readable paths with non-interactive sudo |
 | `--transport openssh` | Use the system `ssh` client (default); supports ControlMaster connection reuse |
@@ -125,7 +125,7 @@ Private key file **contents** are never stored. Sensitive patterns in collected 
 
 **Purpose:** Audit the machine where SSHMap runs **without SSH**.
 
-Local scan executes the same read-only collection commands locally, including `/etc/hosts` alias collection. Useful for bastions, CI runners, or air-gapped analysis workstations.
+Local scan executes the same read-only collection commands locally, including `/etc/hosts`, effective `sshd -T`, and OS metadata collection. Useful for bastions, CI runners, or air-gapped analysis workstations.
 
 Use `--sudo` when passwordless sudo is required to read `/etc/ssh`, `/etc/sudoers`, and user home directories.
 
@@ -162,8 +162,8 @@ Imports create or update host rows and insert raw evidence. IPv6 targets are sup
 
 The analyzer:
 
-1. Parses passwd, groups, authorized_keys, sshd_config, sudoers, known_hosts, `/etc/hosts`, and ssh_config
-2. Normalizes users, keys, sudo rules, and client config entries
+1. Parses passwd, groups, authorized_keys, sshd_config, effective `sshd -T`, sudoers, known_hosts, `/etc/hosts`, OS metadata, and ssh_config
+2. Normalizes users, keys, sudo rules, host metadata, and client config entries
 3. Runs the risk engine (with optional YAML policy overrides)
 4. Applies stored risk exceptions
 5. Rebuilds graph edges between hosts, users, keys, and sudo rules
@@ -179,7 +179,29 @@ The analyzer:
 
 **When to use:** After every discovery, scan, or import batch.
 
-**Output:** Populated `users`, `public_keys`, `authorized_keys`, `risks`, `graph_edges`, `host_aliases`, `data_quality_findings`, and related tables.
+**Output:** Populated `users`, `public_keys`, `authorized_keys`, `risks`, `graph_edges`, `host_aliases`, `data_quality_findings`, host metadata, and related tables.
+
+### Workflow Orchestration (`workflow run`)
+
+**Purpose:** Run the standard audit chain in one command.
+
+`sshmap workflow run` executes discovery, authenticated scan, analysis, and optional DNS enrichment. It is a wrapper around existing read-only phases, so each phase still records normal scan run history.
+
+```bash
+sshmap workflow run --file examples/hosts.txt --user audituser --key ~/.ssh/audit_ed25519 \
+  --sudo --enrich-dns --reverse-dns --db sshmap.db
+```
+
+For lightweight scheduled audits, use `--repeat-every-seconds` with `--repeat-count`.
+
+### Scan Run History (`scan-runs`)
+
+**Purpose:** Inspect recorded discovery, scan, local-scan, and import executions.
+
+| Command | Purpose |
+|---------|---------|
+| `sshmap scan-runs list` | Show recent run mode, status, timestamps, operator, and summary |
+| `sshmap scan-runs show <id-or-uuid>` | Show one run with audit events and JSON summaries |
 
 ### Enrichment and Data Quality (`enrich`)
 
@@ -206,6 +228,10 @@ Example risk categories:
 - Dangerous sudo rules (NOPASSWD, broad commands)
 - Combined critical paths (reused key plus passwordless sudo)
 - Risky SSH client config (`StrictHostKeyChecking no`, `ProxyJump` chains)
+- Effective SSH daemon drift (`sshd_config` vs `sshd -T`)
+- Weak SSH key material (`ssh-dss`, legacy `ssh-rsa`, RSA below 2048 bits)
+- Risky daemon directives (`MaxAuthTries`, `PermitUserEnvironment`, `X11Forwarding`)
+- Wildcard sudoers command patterns
 
 | Command | Purpose |
 |---------|---------|
@@ -392,6 +418,16 @@ sshmap scan --file examples/hosts.txt --user audituser --key ~/.ssh/audit_ed2551
   --proxy-jump bastion.example.com --transport native --db sshmap.db
 
 sshmap scan --targets 10.10.0.0/24 --user audituser --key ~/.ssh/audit_ed25519 --sudo --db sshmap.db
+sshmap scan --file examples/hosts.txt --users-file audit-users.txt --agent --db sshmap.db
+```
+
+### Workflow Run
+
+```bash
+sshmap workflow run --file examples/hosts.txt --user audituser --key ~/.ssh/audit_ed25519 \
+  --sudo --enrich-dns --reverse-dns --db sshmap.db
+sshmap scan-runs list --db sshmap.db
+sshmap scan-runs show 1 --db sshmap.db
 ```
 
 ### Offline Import
@@ -450,7 +486,7 @@ Embedded dashboard:
 sshmap serve --db sshmap.db --listen 127.0.0.1:8080 --read-only
 ```
 
-React dashboard (detail pages, filters, Quality view, graph canvas):
+React dashboard (detail pages, filters, Quality view, Runs view, graph canvas with limit and edge filters):
 
 ```bash
 cd dashboard && npm ci && npm run build
@@ -464,6 +500,13 @@ sshmap serve --db sshmap.db --listen 127.0.0.1:8080 --read-only --token "$SSHMAP
 ```
 
 Send the token in the `X-SSHMap-Token` header. The React dashboard stores it in browser local storage from the Tools page.
+
+Write API endpoints are disabled by default. To create baselines or exceptions through HTTP, start the server with an explicit token and `--allow-write-api`:
+
+```bash
+sshmap serve --db sshmap.db --listen 127.0.0.1:8080 --read-only \
+  --token "$SSHMAP_TOKEN" --allow-write-api
+```
 
 Core API endpoints:
 
@@ -481,13 +524,19 @@ GET /api/risks/{id}
 GET /api/graph?limit=
 GET /api/path?from=...&to=...
 GET /api/blast-radius?user=...
+GET /api/scan-runs?limit=
+GET /api/scan-runs/{id-or-uuid}
 GET /api/baselines
+GET /api/diff?from=...&to=latest
 GET /api/exceptions
 GET /api/known-hosts
 GET /api/ssh-config
 GET /api/host-aliases
 GET /api/data-quality
 GET /api/remediation/{code}
+POST /api/baselines
+POST /api/exceptions
+DELETE /api/exceptions/{id}
 ```
 
 See `docs/api.md` and `docs/dashboard.md` for full reference.
@@ -504,6 +553,7 @@ sshmap discover --file examples/hosts.txt --ports 22 --concurrency 100 --db cust
 sshmap scan --file examples/hosts.txt --user audituser --key ~/.ssh/audit_ed25519 \
   --sudo --timeout 10 --concurrency 20 --db customer.db
 
+sshmap scan-runs list --db customer.db
 sshmap analyze --db customer.db
 sshmap enrich dns --reverse --db customer.db
 
@@ -542,12 +592,6 @@ docs/development/
 ```
 
 Start with `docs/getting-started.md` and `docs/architecture.md`.
-
----
-
-## Coding Standard
-
-All source code, identifiers, comments, database names, CLI commands, tests, error messages, and log messages must be written in English.
 
 ---
 

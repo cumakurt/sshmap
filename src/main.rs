@@ -30,6 +30,7 @@ mod transport;
 use anyhow::Result;
 use clap::Parser;
 use cli::{Cli, Command};
+use std::path::{Path, PathBuf};
 use tracing_subscriber::{EnvFilter, fmt};
 
 #[tokio::main]
@@ -115,83 +116,78 @@ async fn main() -> Result<()> {
         }
         Command::Scan(args) => {
             cli::print_authorization_notice();
-            let scan = config::scan_config(&app_config);
-            let runtime = config::runtime_config(&app_config);
-            let db_path = config::resolve_database(&app_config, &args.db);
-            let username = args.user.or(scan.user).ok_or_else(|| {
-                anyhow::anyhow!("scan user is required; set --user or scan.user in config")
-            })?;
-            let cli_identities_only = if args.identities_only {
-                Some(true)
-            } else if args.no_identities_only {
-                Some(false)
-            } else {
-                None
-            };
-            let auth = config::resolve_scan_auth(
+            let summary = run_scan_phase(
                 &app_config,
-                args.key.or(scan.key),
-                args.agent,
-                args.identity_agent.as_deref(),
-                cli_identities_only,
-            )?;
-            let use_sudo = args.sudo || scan.sudo.unwrap_or(false);
-            let ports = scan
-                .ports
-                .as_ref()
-                .map(|ports| config::format_ports(ports))
-                .unwrap_or(args.ports);
-            let concurrency = scan
-                .concurrency
-                .or(runtime.concurrency)
-                .unwrap_or(args.concurrency)
-                .max(1);
-            let timeout = scan
-                .timeout_seconds
-                .or(runtime.timeout_seconds)
-                .unwrap_or(args.timeout);
-            let max_targets = config::resolve_max_targets(&app_config, args.max_targets);
-            let transport = config::resolve_scan_transport(&app_config, Some(&args.transport))?;
-            let host_key_policy = config::resolve_strict_host_key_policy(
-                &app_config,
-                Some(&args.strict_host_key),
-                args.known_hosts.as_deref(),
-            )?;
-            let connection_reuse =
-                config::resolve_connection_reuse(&app_config, args.no_connection_reuse);
-            let proxy_jump = config::resolve_proxy_jump(&app_config, args.proxy_jump.as_deref())?;
-            db::initialize_database(&db_path)?;
-            let targets = scope::enforce_max_targets(
-                scope::load_target_endpoints(
-                    args.targets.as_deref(),
-                    args.file.as_deref(),
-                    &ports,
-                )?,
-                max_targets,
-            )?;
-
-            let request = collector::remote::RemoteScanRequest {
-                targets,
-                username,
-                auth,
-                use_sudo,
-                concurrency,
-                timeout: std::time::Duration::from_secs(timeout),
-                db_path,
-                show_progress: args.progress,
-                transport,
-                host_key_policy,
-                connection_reuse,
-                proxy_jump,
-            };
-
-            let summary = collector::remote::run_remote_scan(request).await?;
+                ScanPhaseOptions {
+                    targets: args.targets,
+                    file: args.file,
+                    user: args.user,
+                    users_file: args.users_file,
+                    key: args.key,
+                    agent: args.agent,
+                    identity_agent: args.identity_agent,
+                    identities_only: args.identities_only,
+                    no_identities_only: args.no_identities_only,
+                    sudo: args.sudo,
+                    ports: args.ports,
+                    concurrency: args.concurrency,
+                    timeout: args.timeout,
+                    progress: args.progress,
+                    max_targets: args.max_targets,
+                    transport: args.transport,
+                    strict_host_key: args.strict_host_key,
+                    known_hosts: args.known_hosts,
+                    no_connection_reuse: args.no_connection_reuse,
+                    proxy_jump: args.proxy_jump,
+                    db: args.db,
+                },
+            )
+            .await?;
 
             println!("Targets scanned: {}", summary.targets_scanned);
             println!("Hosts succeeded: {}", summary.hosts_succeeded);
             println!("Hosts failed: {}", summary.hosts_failed);
             println!("Evidence items: {}", summary.evidence_items);
         }
+        Command::Workflow { command } => match command {
+            cli::WorkflowCommand::Run(args) => {
+                cli::print_authorization_notice();
+                let iterations = args.repeat_count.max(1);
+                for iteration in 0..iterations {
+                    if iterations > 1 {
+                        println!("Workflow iteration {}/{}", iteration + 1, iterations);
+                    }
+                    run_workflow_once(&app_config, cli.risk_policy.as_deref(), &args).await?;
+                    if iteration + 1 < iterations
+                        && let Some(seconds) = args.repeat_every_seconds
+                    {
+                        tokio::time::sleep(std::time::Duration::from_secs(seconds)).await;
+                    }
+                }
+            }
+        },
+        Command::ScanRuns { command } => match command {
+            cli::ScanRunsCommand::List(args) => {
+                let db_path = config::resolve_database(&app_config, &args.db);
+                let runs = db::list_scan_runs(&db_path, args.limit)?;
+                if args.json {
+                    println!("{}", serde_json::to_string_pretty(&runs)?);
+                } else {
+                    print!("{}", output::format_scan_run_list_text(&runs));
+                }
+            }
+            cli::ScanRunsCommand::Show(args) => {
+                let db_path = config::resolve_database(&app_config, &args.db);
+                let Some(run) = db::get_scan_run(&db_path, &args.id)? else {
+                    anyhow::bail!("scan run {} was not found", args.id);
+                };
+                if args.json {
+                    println!("{}", serde_json::to_string_pretty(&run)?);
+                } else {
+                    print!("{}", output::format_scan_run_detail_text(&run));
+                }
+            }
+        },
         Command::LocalScan(args) => {
             cli::print_authorization_notice();
             db::initialize_database(&args.db)?;
@@ -578,6 +574,7 @@ async fn main() -> Result<()> {
                 db_path,
                 listen,
                 read_only: serve.read_only.unwrap_or(args.read_only),
+                allow_write_api: args.allow_write_api || serve.allow_write_api.unwrap_or(false),
                 token: args.token.or(serve.token),
                 dashboard_dir,
             })
@@ -724,4 +721,236 @@ fn init_tracing(verbose: bool) {
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_filter));
 
     fmt().with_env_filter(filter).without_time().init();
+}
+
+struct ScanPhaseOptions {
+    targets: Option<String>,
+    file: Option<PathBuf>,
+    user: Option<String>,
+    users_file: Option<PathBuf>,
+    key: Option<PathBuf>,
+    agent: bool,
+    identity_agent: Option<PathBuf>,
+    identities_only: bool,
+    no_identities_only: bool,
+    sudo: bool,
+    ports: String,
+    concurrency: usize,
+    timeout: u64,
+    progress: bool,
+    max_targets: Option<usize>,
+    transport: String,
+    strict_host_key: String,
+    known_hosts: Option<PathBuf>,
+    no_connection_reuse: bool,
+    proxy_jump: Option<String>,
+    db: PathBuf,
+}
+
+async fn run_workflow_once(
+    app_config: &config::SshMapConfig,
+    cli_risk_policy: Option<&Path>,
+    args: &cli::WorkflowRunArgs,
+) -> Result<()> {
+    let db_path = config::resolve_database(app_config, &args.db);
+    db::initialize_database(&db_path)?;
+
+    let discover = config::discover_config(app_config);
+    let runtime = config::runtime_config(app_config);
+    let ports = discover
+        .ports
+        .as_ref()
+        .map(|ports| config::format_ports(ports))
+        .unwrap_or_else(|| args.ports.clone());
+    let discover_concurrency = discover
+        .concurrency
+        .or(runtime.concurrency)
+        .unwrap_or(args.discover_concurrency)
+        .max(1);
+    let timeout = discover
+        .timeout_seconds
+        .or(runtime.timeout_seconds)
+        .unwrap_or(args.timeout);
+    let max_targets = config::resolve_max_targets(app_config, args.max_targets);
+    let targets = scope::enforce_max_targets(
+        scope::load_target_endpoints(args.targets.as_deref(), args.file.as_deref(), &ports)?,
+        max_targets,
+    )?;
+
+    let discovery_summary = discovery::run_discovery(
+        targets,
+        discover_concurrency,
+        std::time::Duration::from_secs(timeout),
+        &db_path,
+        args.progress,
+    )
+    .await?;
+    println!(
+        "Discovery targets scanned: {}",
+        discovery_summary.targets_scanned
+    );
+    println!("Discovery SSH open: {}", discovery_summary.ssh_open);
+
+    let scan_summary = run_scan_phase(
+        app_config,
+        ScanPhaseOptions {
+            targets: args.targets.clone(),
+            file: args.file.clone(),
+            user: args.user.clone(),
+            users_file: args.users_file.clone(),
+            key: args.key.clone(),
+            agent: args.agent,
+            identity_agent: args.identity_agent.clone(),
+            identities_only: args.identities_only,
+            no_identities_only: args.no_identities_only,
+            sudo: args.sudo,
+            ports: args.ports.clone(),
+            concurrency: args.scan_concurrency,
+            timeout: args.timeout,
+            progress: args.progress,
+            max_targets: args.max_targets,
+            transport: args.transport.clone(),
+            strict_host_key: args.strict_host_key.clone(),
+            known_hosts: args.known_hosts.clone(),
+            no_connection_reuse: args.no_connection_reuse,
+            proxy_jump: args.proxy_jump.clone(),
+            db: args.db.clone(),
+        },
+    )
+    .await?;
+    println!("Scan targets scanned: {}", scan_summary.targets_scanned);
+    println!("Scan hosts succeeded: {}", scan_summary.hosts_succeeded);
+    println!("Scan hosts failed: {}", scan_summary.hosts_failed);
+    println!("Scan evidence items: {}", scan_summary.evidence_items);
+
+    let config_policy_path = config::risk_policy_path(app_config);
+    let policy_path = cli_risk_policy.or(config_policy_path.as_deref());
+    let policy = risk::load_risk_policy(policy_path)?;
+    let analysis_summary =
+        analyzer::run_analysis(&db_path, models::AnalyzeScope::All, &policy, false)?;
+    println!("Analysis risks generated: {}", analysis_summary.risks);
+    println!(
+        "Analysis host aliases parsed: {}",
+        analysis_summary.host_aliases
+    );
+
+    if args.enrich_dns {
+        let enrich_summary = enrich::enrich_dns(&db_path, 1000, args.reverse_dns)?;
+        println!("DNS aliases enriched: {}", enrich_summary.imported);
+    }
+
+    println!("Workflow database: {}", db_path.display());
+    Ok(())
+}
+
+async fn run_scan_phase(
+    app_config: &config::SshMapConfig,
+    options: ScanPhaseOptions,
+) -> Result<models::RemoteScanSummary> {
+    let scan = config::scan_config(app_config);
+    let runtime = config::runtime_config(app_config);
+    let db_path = config::resolve_database(app_config, &options.db);
+    let usernames =
+        resolve_scan_usernames(options.user.or(scan.user), options.users_file.as_deref())?;
+    let cli_identities_only = if options.identities_only {
+        Some(true)
+    } else if options.no_identities_only {
+        Some(false)
+    } else {
+        None
+    };
+    let auth = config::resolve_scan_auth(
+        app_config,
+        options.key.or(scan.key),
+        options.agent,
+        options.identity_agent.as_deref(),
+        cli_identities_only,
+    )?;
+    let use_sudo = options.sudo || scan.sudo.unwrap_or(false);
+    let ports = scan
+        .ports
+        .as_ref()
+        .map(|ports| config::format_ports(ports))
+        .unwrap_or(options.ports);
+    let concurrency = scan
+        .concurrency
+        .or(runtime.concurrency)
+        .unwrap_or(options.concurrency)
+        .max(1);
+    let timeout = scan
+        .timeout_seconds
+        .or(runtime.timeout_seconds)
+        .unwrap_or(options.timeout);
+    let max_targets = config::resolve_max_targets(app_config, options.max_targets);
+    let transport = config::resolve_scan_transport(app_config, Some(&options.transport))?;
+    let host_key_policy = config::resolve_strict_host_key_policy(
+        app_config,
+        Some(&options.strict_host_key),
+        options.known_hosts.as_deref(),
+    )?;
+    let connection_reuse =
+        config::resolve_connection_reuse(app_config, options.no_connection_reuse);
+    let proxy_jump = config::resolve_proxy_jump(app_config, options.proxy_jump.as_deref())?;
+    db::initialize_database(&db_path)?;
+    let targets = scope::enforce_max_targets(
+        scope::load_target_endpoints(options.targets.as_deref(), options.file.as_deref(), &ports)?,
+        max_targets,
+    )?;
+
+    let mut summary = models::RemoteScanSummary {
+        targets_scanned: 0,
+        hosts_succeeded: 0,
+        hosts_failed: 0,
+        evidence_items: 0,
+    };
+
+    for username in usernames {
+        let user_summary =
+            collector::remote::run_remote_scan(collector::remote::RemoteScanRequest {
+                targets: targets.clone(),
+                username,
+                auth: auth.clone(),
+                use_sudo,
+                concurrency,
+                timeout: std::time::Duration::from_secs(timeout),
+                db_path: db_path.clone(),
+                show_progress: options.progress,
+                transport,
+                host_key_policy: host_key_policy.clone(),
+                connection_reuse,
+                proxy_jump: proxy_jump.clone(),
+            })
+            .await?;
+        summary.targets_scanned += user_summary.targets_scanned;
+        summary.hosts_succeeded += user_summary.hosts_succeeded;
+        summary.hosts_failed += user_summary.hosts_failed;
+        summary.evidence_items += user_summary.evidence_items;
+    }
+
+    Ok(summary)
+}
+
+fn resolve_scan_usernames(
+    configured_user: Option<String>,
+    users_file: Option<&Path>,
+) -> Result<Vec<String>> {
+    let mut usernames = Vec::new();
+    if let Some(username) = configured_user.filter(|value| !value.trim().is_empty()) {
+        usernames.push(username);
+    }
+    if let Some(path) = users_file {
+        let content = std::fs::read_to_string(path).map_err(|error| {
+            anyhow::anyhow!("failed to read users file {}: {error}", path.display())
+        })?;
+        for line in content.lines() {
+            let username = line.split('#').next().unwrap_or("").trim();
+            if !username.is_empty() && !usernames.iter().any(|existing| existing == username) {
+                usernames.push(username.to_string());
+            }
+        }
+    }
+    if usernames.is_empty() {
+        anyhow::bail!("scan user is required; set --user, --users-file, or scan.user in config");
+    }
+    Ok(usernames)
 }

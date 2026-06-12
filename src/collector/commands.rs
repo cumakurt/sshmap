@@ -50,6 +50,12 @@ pub fn default_remote_commands() -> Vec<RemoteCommand> {
             sudo_policy: SudoPolicy::Never,
         },
         RemoteCommand {
+            name: "host_metadata",
+            evidence_type: "host_metadata",
+            command: "(cat /etc/os-release 2>/dev/null || true; printf '\\nSSHMAP_UNAME='; uname -srm 2>/dev/null || true)",
+            sudo_policy: SudoPolicy::Never,
+        },
+        RemoteCommand {
             name: "hosts_file",
             evidence_type: "hosts_file",
             command: "cat /etc/hosts 2>/dev/null",
@@ -65,6 +71,12 @@ pub fn default_remote_commands() -> Vec<RemoteCommand> {
             name: "sshd_config_directory",
             evidence_type: "sshd_config",
             command: "find /etc/ssh/sshd_config.d -maxdepth 1 -type f -name '*.conf' -exec sh -c 'for file do printf \"\\n--- SSHMAP_FILE:%s ---\\n\" \"$file\"; cat \"$file\" 2>/dev/null; done' sh {} + 2>/dev/null",
+            sudo_policy: SudoPolicy::Prefer,
+        },
+        RemoteCommand {
+            name: "sshd_effective_config",
+            evidence_type: "sshd_effective_config",
+            command: "sshd -T 2>/dev/null",
             sudo_policy: SudoPolicy::Prefer,
         },
         RemoteCommand {
@@ -157,6 +169,8 @@ mod tests {
         assert!(evidence_types.contains(&"known_hosts"));
         assert!(evidence_types.contains(&"ssh_config"));
         assert!(evidence_types.contains(&"hosts_file"));
+        assert!(evidence_types.contains(&"host_metadata"));
+        assert!(evidence_types.contains(&"sshd_effective_config"));
     }
 
     #[test]

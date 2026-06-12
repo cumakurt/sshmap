@@ -49,6 +49,7 @@ pub struct DiscoverConfig {
 pub struct ServeConfig {
     pub listen: Option<String>,
     pub read_only: Option<bool>,
+    pub allow_write_api: Option<bool>,
     pub token: Option<String>,
     pub dashboard: Option<PathBuf>,
 }

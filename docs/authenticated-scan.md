@@ -76,10 +76,12 @@ Typical evidence types:
 
 - `passwd` and `group` entries
 - `sshd_config`
+- Effective daemon configuration from `sshd -T`
 - `authorized_keys` for discovered users
 - `sudoers` rules when accessible
 - `known_hosts` and user `ssh_config` files when accessible
 - `/etc/hosts` aliases
+- OS metadata from `/etc/os-release` and `uname`
 - Public key fingerprints and file permissions
 
 ## Safety Model

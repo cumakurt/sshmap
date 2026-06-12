@@ -53,6 +53,10 @@ pub struct ImportedHost {
     pub fqdn: Option<String>,
     pub ip_address: String,
     pub port: i64,
+    pub os_family: Option<String>,
+    pub os_version: Option<String>,
+    pub environment: Option<String>,
+    pub criticality: Option<String>,
     pub ssh_open: bool,
 }
 
@@ -111,6 +115,7 @@ pub struct AnalysisSummary {
 pub struct NormalizedAnalysis {
     pub users: Vec<ParsedUser>,
     pub groups: Vec<ParsedGroup>,
+    pub host_metadata: Vec<ParsedHostMetadata>,
     pub sshd_config_entries: Vec<ParsedSshdConfigEntry>,
     pub authorized_keys: Vec<ParsedAuthorizedKey>,
     pub sudo_rules: Vec<ParsedSudoRule>,
@@ -278,6 +283,13 @@ pub struct ParsedGroup {
     pub members: Vec<String>,
 }
 
+#[derive(Debug, Clone, Default, Eq, PartialEq)]
+pub struct ParsedHostMetadata {
+    pub host_id: i64,
+    pub os_family: Option<String>,
+    pub os_version: Option<String>,
+}
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct ParsedSshdConfigEntry {
     pub host_id: i64,
@@ -285,12 +297,14 @@ pub struct ParsedSshdConfigEntry {
     pub value: Option<String>,
     pub source_file: String,
     pub line_number: i64,
+    pub effective: bool,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct ParsedPublicKey {
     pub key_type: String,
     pub fingerprint_sha256: String,
+    pub key_bits: Option<i64>,
     pub key_comment: Option<String>,
     pub normalized_public_key: String,
 }
@@ -403,6 +417,10 @@ pub struct HostRecord {
     pub fqdn: Option<String>,
     pub ip_address: String,
     pub port: i64,
+    pub os_family: Option<String>,
+    pub os_version: Option<String>,
+    pub environment: Option<String>,
+    pub criticality: Option<String>,
     pub ssh_open: bool,
     pub ssh_banner: Option<String>,
     pub source: String,
@@ -417,6 +435,37 @@ pub struct HostDetailRecord {
     pub host: HostRecord,
     pub users: Vec<UserAccountRecord>,
     pub risks: Vec<RiskRecord>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ScanRunRecord {
+    pub id: i64,
+    pub run_uuid: String,
+    pub mode: String,
+    pub started_at: String,
+    pub finished_at: Option<String>,
+    pub status: String,
+    pub targets_json: Option<String>,
+    pub operator: Option<String>,
+    pub sudo_enabled: Option<bool>,
+    pub summary_json: Option<String>,
+    pub error_message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ScanRunDetailRecord {
+    pub run: ScanRunRecord,
+    pub events: Vec<AuditEventRecord>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AuditEventRecord {
+    pub id: i64,
+    pub scan_run_id: Option<i64>,
+    pub event_type: String,
+    pub message: String,
+    pub metadata_json: Option<String>,
+    pub created_at: String,
 }
 
 #[derive(Debug, Clone, Serialize)]

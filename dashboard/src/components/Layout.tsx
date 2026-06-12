@@ -36,6 +36,9 @@ export function Layout({ summaryLine, error }: { summaryLine: string; error: str
         <NavLink to="/data-quality" className={linkClass}>
           Quality
         </NavLink>
+        <NavLink to="/operations" className={linkClass}>
+          Runs
+        </NavLink>
         <NavLink to="/tools" className={linkClass}>
           Tools
         </NavLink>

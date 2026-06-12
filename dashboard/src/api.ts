@@ -19,6 +19,10 @@ export interface HostRecord {
   fqdn: string | null;
   ip_address: string;
   port: number;
+  os_family: string | null;
+  os_version: string | null;
+  environment: string | null;
+  criticality: string | null;
   ssh_open: boolean;
   ssh_banner: string | null;
   source: string;
@@ -161,8 +165,75 @@ export interface BlastRadiusRecord {
 export interface RiskExceptionRecord {
   id: number;
   risk_code: string;
+  host_id: number | null;
+  username: string | null;
+  public_key_fingerprint: string | null;
   reason: string;
   created_at: string;
+  expires_at: string | null;
+}
+
+export interface ScanRunRecord {
+  id: number;
+  run_uuid: string;
+  mode: string;
+  started_at: string;
+  finished_at: string | null;
+  status: string;
+  targets_json: string | null;
+  operator: string | null;
+  sudo_enabled: boolean | null;
+  summary_json: string | null;
+  error_message: string | null;
+}
+
+export interface AuditEventRecord {
+  id: number;
+  scan_run_id: number | null;
+  event_type: string;
+  message: string;
+  metadata_json: string | null;
+  created_at: string;
+}
+
+export interface ScanRunDetailRecord {
+  run: ScanRunRecord;
+  events: AuditEventRecord[];
+}
+
+export interface BaselineSummary {
+  hosts: number;
+  users: number;
+  keys: number;
+  risks: number;
+  critical_risks: number;
+  high_risks: number;
+}
+
+export interface BaselineRecord {
+  id: number;
+  name: string;
+  created_at: string;
+  summary: BaselineSummary;
+}
+
+export interface BaselineRiskRecord {
+  signature: string;
+  risk_code: string;
+  severity: string;
+  score: number;
+  target: string;
+  title: string;
+  evidence: string | null;
+  status: string;
+}
+
+export interface BaselineDiffRecord {
+  from: BaselineRecord;
+  to: BaselineRecord;
+  new_risks: BaselineRiskRecord[];
+  resolved_risks: BaselineRiskRecord[];
+  unchanged_risks: number;
 }
 
 export interface SshClientConfigEntryRecord {
@@ -237,13 +308,31 @@ export function setToken(token: string): void {
 }
 
 export async function api<T>(path: string): Promise<T> {
+  return apiRequest<T>(path);
+}
+
+export async function apiPost<T>(path: string, body: unknown): Promise<T> {
+  return apiRequest<T>(path, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function apiDelete<T>(path: string): Promise<T> {
+  return apiRequest<T>(path, { method: "DELETE" });
+}
+
+async function apiRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers: Record<string, string> = {};
   const token = getToken();
   if (token) {
     headers["X-SSHMap-Token"] = token;
   }
+  if (init.body) {
+    headers["Content-Type"] = "application/json";
+  }
 
-  const response = await fetch(path, { headers });
+  const response = await fetch(path, { ...init, headers });
   if (!response.ok) {
     throw new Error(await response.text());
   }

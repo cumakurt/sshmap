@@ -1,7 +1,7 @@
 # SSHMap
 
 <p align="center">
-  <img src="sshmap.png" alt="SSHMap logo" width="180">
+  <img src="sshmap.png" alt="SSHMap logo" width="360">
 </p>
 
 SSHMap is an agentless SSH exposure management CLI. It discovers SSH services, collects read-only configuration evidence, analyzes security risks, builds a directed access graph, and exposes inventory through a command-line interface, REST API, and React dashboard.

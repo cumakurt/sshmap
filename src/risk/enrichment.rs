@@ -131,18 +131,21 @@ pub fn generate_key_rotation_risks(
 
 pub fn generate_server_host_key_risks(input: &RiskEnrichmentInput<'_>) -> Vec<GeneratedRisk> {
     let mut risks = Vec::new();
-    let mut by_host: BTreeMap<i64, Vec<&HostServerKeyRecord>> = BTreeMap::new();
+    let mut by_host_key_type: BTreeMap<(i64, String), Vec<&HostServerKeyRecord>> = BTreeMap::new();
     let mut by_fingerprint_hosts: BTreeMap<String, BTreeSet<i64>> = BTreeMap::new();
 
     for record in input.server_host_keys {
-        by_host.entry(record.host_id).or_default().push(record);
+        by_host_key_type
+            .entry((record.host_id, record.key_type.clone()))
+            .or_default()
+            .push(record);
         by_fingerprint_hosts
             .entry(record.fingerprint_sha256.clone())
             .or_default()
             .insert(record.host_id);
     }
 
-    for (host_id, records) in &by_host {
+    for ((host_id, key_type), records) in &by_host_key_type {
         if records.len() > 1 {
             let fingerprints = records
                 .iter()
@@ -157,10 +160,15 @@ pub fn generate_server_host_key_risks(input: &RiskEnrichmentInput<'_>) -> Vec<Ge
                     severity: "HIGH".to_string(),
                     score: 78,
                     confidence: "HIGH".to_string(),
-                    title: "Multiple SSH server host keys recorded for one host".to_string(),
-                    description: "The host has more than one server host key fingerprint in inventory.".to_string(),
+                    title: "Multiple SSH server host keys recorded for one key type".to_string(),
+                    description: format!(
+                        "The host has more than one {key_type} server host key fingerprint in inventory."
+                    ),
                     impact: "Unexpected host key changes may indicate rebuilds, MITM exposure, or DNS/IP reuse.".to_string(),
-                    evidence: fingerprints.into_iter().collect::<Vec<_>>().join(", "),
+                    evidence: format!(
+                        "key_type={key_type} fingerprints={}",
+                        fingerprints.into_iter().collect::<Vec<_>>().join(", ")
+                    ),
                     recommendation: "Verify the change is expected and update client known_hosts trust stores.".to_string(),
                 });
             }
@@ -201,4 +209,71 @@ pub fn generate_server_host_key_risks(input: &RiskEnrichmentInput<'_>) -> Vec<Ge
     }
 
     risks
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key(host_id: i64, key_type: &str, fingerprint: &str) -> HostServerKeyRecord {
+        HostServerKeyRecord {
+            host_id,
+            key_type: key_type.to_string(),
+            fingerprint_sha256: fingerprint.to_string(),
+            first_seen: "2026-01-01T00:00:00Z".to_string(),
+            last_seen: "2026-01-01T00:00:00Z".to_string(),
+            source: "test".to_string(),
+        }
+    }
+
+    fn input<'a>(
+        server_host_keys: &'a [HostServerKeyRecord],
+        host_banners: &'a BTreeMap<i64, String>,
+    ) -> RiskEnrichmentInput<'a> {
+        RiskEnrichmentInput {
+            hosts: &[],
+            host_banners,
+            key_ages: &[],
+            server_host_keys,
+        }
+    }
+
+    #[test]
+    fn server_host_key_risks_allow_multiple_key_algorithms_for_one_host() {
+        let records = vec![
+            key(1, "ecdsa-sha2-nistp256", "SHA256:ecdsa"),
+            key(1, "ssh-ed25519", "SHA256:ed25519"),
+            key(1, "ssh-rsa", "SHA256:rsa"),
+        ];
+        let host_banners = BTreeMap::new();
+
+        let risks = generate_server_host_key_risks(&input(&records, &host_banners));
+
+        assert!(
+            risks
+                .iter()
+                .all(|risk| risk.risk_code != "SSH_SERVER_HOST_KEY_CHANGED"),
+            "{risks:#?}"
+        );
+    }
+
+    #[test]
+    fn server_host_key_risks_flag_multiple_fingerprints_for_same_key_algorithm() {
+        let records = vec![
+            key(1, "ssh-ed25519", "SHA256:old"),
+            key(1, "ssh-ed25519", "SHA256:new"),
+        ];
+        let host_banners = BTreeMap::new();
+
+        let risks = generate_server_host_key_risks(&input(&records, &host_banners));
+
+        let changed = risks
+            .iter()
+            .find(|risk| risk.risk_code == "SSH_SERVER_HOST_KEY_CHANGED")
+            .expect("same host and key type should produce a host-key-changed risk");
+        assert_eq!(changed.host_id, Some(1));
+        assert!(changed.evidence.contains("key_type=ssh-ed25519"));
+        assert!(changed.evidence.contains("SHA256:old"));
+        assert!(changed.evidence.contains("SHA256:new"));
+    }
 }

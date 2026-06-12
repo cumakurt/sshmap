@@ -490,7 +490,7 @@ mod tests {
     }
 
     #[test]
-    fn known_hosts_writability_rejects_unwritable_existing_file() {
+    fn known_hosts_writability_reports_existing_file_permissions() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let path = temp_dir.path().join("known_hosts");
         std::fs::write(&path, b"example.com ssh-ed25519 AAAAB3NzaC1yc2E=\n").expect("write file");
@@ -502,7 +502,12 @@ mod tests {
             permissions.set_mode(0o444);
             std::fs::set_permissions(&path, permissions).expect("set permissions");
 
-            assert!(probe_known_hosts_writability(&path, "accept-new").starts_with("not writable"));
+            let status = probe_known_hosts_writability(&path, "accept-new");
+            if std::fs::OpenOptions::new().append(true).open(&path).is_ok() {
+                assert!(status.starts_with("ok ("));
+            } else {
+                assert!(status.starts_with("not writable"));
+            }
         }
 
         #[cfg(not(unix))]

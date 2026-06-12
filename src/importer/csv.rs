@@ -137,4 +137,34 @@ mod tests {
             vec!["web01", "10.0.0.10", "22"]
         );
     }
+
+    #[test]
+    fn rejects_invalid_imported_host_targets() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let csv_path = temp_dir.path().join("inventory.csv");
+        std::fs::write(&csv_path, "hostname,ip_address,port\nweb01,bad host,22\n").expect("csv");
+        let db_path = temp_dir.path().join("inventory.db");
+        crate::db::initialize_database(&db_path).expect("db");
+
+        let error = import_csv_inventory(&csv_path, None, &db_path).expect_err("invalid host");
+
+        assert!(error.to_string().contains("invalid imported host target"));
+    }
+
+    #[test]
+    fn rejects_invalid_imported_host_ports() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let csv_path = temp_dir.path().join("inventory.csv");
+        std::fs::write(
+            &csv_path,
+            "hostname,ip_address,port\nweb01,10.0.0.10,70000\n",
+        )
+        .expect("csv");
+        let db_path = temp_dir.path().join("inventory.db");
+        crate::db::initialize_database(&db_path).expect("db");
+
+        let error = import_csv_inventory(&csv_path, None, &db_path).expect_err("invalid port");
+
+        assert!(error.to_string().contains("invalid imported host port"));
+    }
 }

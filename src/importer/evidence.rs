@@ -209,9 +209,15 @@ fn list_files_recursive(dir: &Path, depth: usize) -> Result<Vec<PathBuf>> {
     for entry in fs::read_dir(dir).with_context(|| format!("failed to read {}", dir.display()))? {
         let entry = entry?;
         let path = entry.path();
-        if path.is_dir() {
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("failed to inspect {}", path.display()))?;
+        if file_type.is_symlink() {
+            continue;
+        }
+        if file_type.is_dir() {
             files.extend(list_files_recursive(&path, depth + 1)?);
-        } else if path.is_file() {
+        } else if file_type.is_file() {
             files.push(path);
         }
         if files.len() > MAX_BUNDLE_FILES {
@@ -273,5 +279,22 @@ mod import_tests {
         let summary = import_auto(&hosts_path, None, None, &db_path).expect("auto import");
 
         assert_eq!(summary.imported, 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bundle_import_skips_symlinked_files() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let bundle_dir = temp_dir.path().join("bundle");
+        std::fs::create_dir(&bundle_dir).expect("bundle dir");
+        let outside_hosts = temp_dir.path().join("outside-hosts");
+        std::fs::write(&outside_hosts, "10.0.0.10 web01 web01.internal\n").expect("hosts");
+        std::os::unix::fs::symlink(&outside_hosts, bundle_dir.join("hosts")).expect("symlink");
+        let db_path = temp_dir.path().join("bundle.db");
+        crate::db::initialize_database(&db_path).expect("db");
+
+        let summary = import_bundle(&bundle_dir, None, None, &db_path).expect("bundle import");
+
+        assert_eq!(summary.imported, 0);
     }
 }

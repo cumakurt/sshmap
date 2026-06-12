@@ -18,7 +18,7 @@ SSHMap is an agentless SSH exposure management CLI. It discovers SSH services, c
 | **LinkedIn** | [cuma-kurt-34414917](https://www.linkedin.com/in/cuma-kurt-34414917/) |
 | **GitHub** | [cumakurt/sshmap](https://github.com/cumakurt/sshmap) |
 
-Run `sshmap` or `sshmap --help` for the full command reference. Use `sshmap <command> --help` for detailed flag documentation on any subcommand.
+Run `sshmap -a -t <targets>` for a full audit in one command, or `sshmap --help` for the complete reference. Use `sshmap <command> --help` for detailed flag documentation on any subcommand.
 
 ---
 
@@ -29,6 +29,7 @@ Run `sshmap` or `sshmap --help` for the full command reference. Use `sshmap <com
 - [Safety](#safety)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
+- [Quick Workflow (`-a/--all`)](#quick-workflow-aall)
 - [Configuration](#configuration)
 - [Live Progress](#live-progress)
 - [Command Examples](#command-examples)
@@ -192,9 +193,58 @@ Phase progress (loading evidence, parsing, generating risks, persisting) is prin
 
 **Output:** Populated `users`, `public_keys`, `authorized_keys`, `risks`, `graph_edges`, `host_aliases`, `data_quality_findings`, host metadata, and related tables.
 
+### Quick Workflow (`-a/--all`)
+
+**Purpose:** Run a complete engagement from targets to reports in one command — no subcommands required.
+
+`sshmap -a` chains discovery (port 22), authenticated OpenSSH scan, analysis, reverse DNS enrichment, baseline creation, and full artifact export into a timestamped session directory. An authorization notice is printed before collection begins.
+
+| Flag | What it does |
+|------|----------------|
+| `-a` / `--all` | Enable the quick workflow (requires `-t` or `-f`) |
+| `-t` / `--target` | Inline targets: IPs, CIDRs, hostnames, comma-separated lists |
+| `-f` / `--file` | Target file (mixed formats; see below) |
+| `--user` | SSH username (defaults to `scan.user` in config or the current OS user) |
+| `--key` | SSH private key path (OpenSSH defaults and agent are used when omitted) |
+| `--sudo` | Prefix protected collection commands with non-interactive sudo |
+| `--session` | Custom session name suffix in the output directory |
+| `--reports-dir` | Output root directory (default: `reports`) |
+| `--timeout` | Per-target timeout in seconds (default: `10`) |
+| `--concurrency` | Maximum concurrent operations (default: `100`) |
+| `--max-targets` | Cap the number of expanded targets |
+| `--serve-listen` | Listen address printed for the post-run `serve` command (default: `127.0.0.1:8080`) |
+
+**Target file formats** (`-f`): one target per line, comma/space/semicolon-separated values, `/etc/hosts` entries, CIDR blocks, IPv4 ranges (`192.168.1.10-20`), wildcard IPv4 (`192.168.1.*`), `host:port` / `[IPv6]:port`, `key=value` lines, and `ssh://user@host:port` URLs. Expanded targets are scanned on port 22.
+
+**Session output** (`reports/<timestamp-session>/`):
+
+| Artifact | Description |
+|----------|-------------|
+| `sshmap.db` | SQLite inventory database |
+| `report.html`, `report.json`, `csv/` | Human and machine-readable reports |
+| `graph.json`, `graph.dot`, `graph-cytoscape.json` | Access graph exports |
+| `summary.json`, `risks.json`, `risks.ndjson` | Risk and inventory summaries |
+| `hosts.json`, `hosts.csv`, `known-hosts.*`, `ssh-config.*` | Entity exports |
+| `compliance.json`, `hardening.json` | Compliance and hardening scores |
+| `risks.sarif.json` | SARIF for CI and code scanning |
+| `remediation.sh`, `remediation.yml` | Remediation snippets |
+| `evidence-bundle.zip` | Audit bundle with raw evidence |
+
+At completion, SSHMap prints a ready-to-run `sshmap serve` command for the session database.
+
+```bash
+sshmap -a -t 192.168.0.0/24
+sshmap -a -f /etc/hosts --user audit --key ~/.ssh/audit_ed25519 --sudo
+sshmap -a -f targets.txt --session branch-office --reports-dir reports --max-targets 500
+```
+
+**When to use:** First-time audits, branch-office sweeps, or any engagement where you want discover → scan → analyze → export without scripting individual phases.
+
+**Compared to `workflow run`:** The quick workflow always uses OpenSSH, writes a self-contained session directory with all exports, creates a named baseline, and prints the dashboard `serve` command. `workflow run` is better when you need native transport, proxy jumps, repeat scheduling, or a single shared database path.
+
 ### Workflow Orchestration (`workflow run`)
 
-**Purpose:** Run the standard audit chain in one command.
+**Purpose:** Run the standard audit chain in one command with full transport and scheduling options.
 
 `sshmap workflow run` executes discovery, authenticated scan, analysis, and optional DNS enrichment. It is a wrapper around existing read-only phases, so each phase still records normal scan run history. Phase banners and per-target progress are shown on stderr when running on a terminal.
 
@@ -482,24 +532,21 @@ See `docs/doctor.md` for the full check list.
 
 ## Quick Start
 
-Full one-command run. This creates a timestamped session under `reports/`, discovers SSH on port 22, collects evidence with the system `ssh` client, analyzes findings, writes reports/graphs/exports, and prints the `serve` command for the web UI:
+Fastest path — one command from targets to reports and dashboard:
 
 ```bash
 sshmap -a -t 192.168.0.0/24
 sshmap -a -f /etc/hosts
-sshmap -a -f target.txt
 ```
 
-Optional quick-run controls:
+With credentials and a named session:
 
 ```bash
 sshmap -a -t 10.10.0.0/24 --user audit --key ~/.ssh/audit_ed25519 --sudo
-sshmap -a -f hosts.txt --session branch-office --reports-dir reports --timeout 5
+sshmap -a -f hosts.txt --session branch-office --reports-dir reports
 ```
 
-Target files can contain mixed formats: one target per line, comma/space/semicolon separated values, `/etc/hosts` entries, CIDR blocks, IPv4 ranges such as `192.168.1.10-20`, wildcard IPv4 values such as `192.168.1.*`, `host:port` / `[IPv6]:port`, `key=value`, and URLs such as `ssh://user@192.168.1.10:22`. The quick workflow still scans the resolved targets on port 22 by default.
-
-The quick workflow uses OpenSSH directly (`ssh`) with your SSH config, agent, and default keys when `--key` is omitted. Outputs are written to `reports/<timestamp-session>/`, including `sshmap.db`, HTML/JSON/CSV reports, graph exports, SARIF, remediation files, and an evidence bundle.
+Then open the dashboard using the `serve` command printed at the end, or browse artifacts under `reports/<timestamp-session>/`. See [Quick Workflow (`-a/--all`)](#quick-workflow-aall) for the full flag and output reference.
 
 Manual workflow:
 
@@ -515,6 +562,24 @@ sshmap risks list --db sshmap.db
 
 sshmap graph export --format dot --output graph.dot --db sshmap.db
 sshmap baseline create --name initial --db sshmap.db
+```
+
+---
+
+## Quick Workflow (`-a/--all`)
+
+```bash
+# Inline targets
+sshmap -a -t 10.10.0.0/24,192.168.1.0/24
+
+# Mixed-format target file
+sshmap -a -f targets.txt --user audit --key ~/.ssh/audit_ed25519 --sudo
+
+# Cap targets and customize session output
+sshmap -a -f /etc/hosts --session datacenter --max-targets 250 --timeout 15
+
+# After completion, serve the session database (command is also printed by SSHMap)
+sshmap serve --read-only --db reports/20260612T120000Z-datacenter/sshmap.db --listen 127.0.0.1:8080
 ```
 
 ---
@@ -539,6 +604,7 @@ Long-running commands print **live status to stderr** when stderr is an interact
 |---------|----------------|
 | `discover` | `discover: 42/100 (42%) 10.0.0.5:22` — updates on the same line |
 | `scan` | `scan: 15/50 (30%) web01.example.com:22` |
+| `-a` / `--all` | Discovery and scan progress, then analysis phase steps |
 | `workflow run` | Phase banners (`discovery`, `scan`, `analyze`) plus per-target progress in each phase |
 | `analyze` | Phase steps: loading evidence, parsing, generating risks, persisting |
 | `local-scan` | Current evidence type (`passwd`, `sshd_config`, …) |
@@ -562,6 +628,14 @@ Progress uses carriage-return line updates on terminals and periodic line logs w
 ---
 
 ## Command Examples
+
+### Quick Workflow
+
+```bash
+sshmap -a -t 192.168.0.0/24
+sshmap -a -f /etc/hosts --user audit --key ~/.ssh/audit_ed25519 --sudo
+sshmap -a -f targets.txt --session site-a --reports-dir reports --concurrency 50
+```
 
 ### Discovery
 
@@ -760,6 +834,14 @@ Graph analysis uses a default cap of **10,000 edges** (CLI and API). Use `--full
 
 ## End-to-End Workflow
 
+One-command session (recommended for new engagements):
+
+```bash
+sshmap -a -f examples/hosts.txt --user audituser --key ~/.ssh/audit_ed25519 --sudo
+```
+
+Manual step-by-step workflow:
+
 ```bash
 sshmap init --db customer.db
 
@@ -791,6 +873,7 @@ sshmap report create --format html --output customer-report.html --db customer.d
 
 ```text
 CHANGELOG.md
+RELEASE_NOTES.md
 SECURITY.md
 docs/getting-started.md
 docs/scope.md

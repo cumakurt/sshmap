@@ -486,6 +486,10 @@ pub fn store_imported_hosts(
     source: &str,
     hosts: &[ImportedHost],
 ) -> Result<ImportSummary> {
+    for host in hosts {
+        validate_imported_host(host)?;
+    }
+
     let mut connection = Connection::open(path)
         .with_context(|| format!("failed to open database at {}", path.display()))?;
     apply_pragmas(&connection)?;
@@ -537,6 +541,19 @@ pub fn store_imported_hosts(
     )?;
 
     Ok(summary)
+}
+
+fn validate_imported_host(host: &ImportedHost) -> Result<()> {
+    crate::security::validate_import_host_identifier(&host.ip_address)
+        .with_context(|| format!("invalid imported host target {}", host.ip_address))?;
+    if !(1..=65_535).contains(&host.port) {
+        anyhow::bail!(
+            "invalid imported host port {} for {}",
+            host.port,
+            host.ip_address
+        );
+    }
+    Ok(())
 }
 
 pub fn store_host_aliases(path: &Path, aliases: &[ParsedHostAlias]) -> Result<ImportSummary> {
@@ -3059,4 +3076,3 @@ fn map_raw_evidence_bundle_row(
         collected_at: row.get(4)?,
     })
 }
-

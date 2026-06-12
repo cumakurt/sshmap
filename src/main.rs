@@ -35,6 +35,7 @@ mod progress;
 mod report;
 mod risk;
 mod scope;
+mod security;
 mod server;
 mod ssh_version;
 mod target;
@@ -739,6 +740,7 @@ async fn main() -> Result<()> {
                 listen,
                 read_only: serve.read_only.unwrap_or(args.read_only),
                 allow_write_api: args.allow_write_api || serve.allow_write_api.unwrap_or(false),
+                require_token: args.require_token || server::require_token_from_env(),
                 read_token: tokens.read_token.clone(),
                 write_token: tokens.write_token.clone(),
                 dashboard_dir,

@@ -78,7 +78,7 @@ pub fn export_risks(db_path: &Path, format: RiskExportFormat, query: &RiskQuery)
     let risks = db::list_risks(db_path, query)?;
     match format {
         RiskExportFormat::Json => Ok(serde_json::to_string_pretty(&risks)?),
-        RiskExportFormat::Ndjson => Ok(render_risks_ndjson(&risks)),
+        RiskExportFormat::Ndjson => render_risks_ndjson(&risks),
     }
 }
 
@@ -114,17 +114,13 @@ pub fn export_ssh_config(
     }
 }
 
-fn render_risks_ndjson(risks: &[RiskRecord]) -> String {
+fn render_risks_ndjson(risks: &[RiskRecord]) -> Result<String> {
     let mut output = String::new();
     for risk in risks {
-        writeln!(
-            output,
-            "{}",
-            serde_json::to_string(risk).expect("serialize risk")
-        )
-        .expect("writing to String cannot fail");
+        let line = serde_json::to_string(risk)?;
+        writeln!(output, "{line}").expect("writing to String cannot fail");
     }
-    output
+    Ok(output)
 }
 
 fn render_hosts_monitoring_csv(
@@ -304,7 +300,7 @@ mod tests {
             last_seen: "2026-06-11T00:00:00Z".to_string(),
         }];
 
-        let rendered = render_risks_ndjson(&risks);
+        let rendered = render_risks_ndjson(&risks).expect("ndjson");
         assert!(rendered.contains("\"risk_code\":\"SSH_ROOT_LOGIN_ENABLED\""));
         assert!(rendered.ends_with('\n'));
     }

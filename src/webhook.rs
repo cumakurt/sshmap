@@ -21,6 +21,7 @@ pub struct WebhookSummary {
 }
 
 pub async fn send_webhook(url: &str, payload: &WebhookPayload) -> anyhow::Result<()> {
+    crate::security::validate_webhook_url(url)?;
     let body = serde_json::to_string(payload)?;
     let output = timeout(
         Duration::from_secs(15),

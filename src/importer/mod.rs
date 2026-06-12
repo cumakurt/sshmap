@@ -105,9 +105,12 @@ pub fn run_import(request: ImportRequest) -> Result<ImportSummary> {
 }
 
 fn require_host(host: &Option<String>) -> Result<&str> {
-    host.as_deref()
+    let host = host
+        .as_deref()
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| anyhow::anyhow!("--host is required for this import type"))
+        .ok_or_else(|| anyhow::anyhow!("--host is required for this import type"))?;
+    crate::security::validate_import_host_identifier(host)?;
+    Ok(host)
 }
 
 pub fn store_hosts(

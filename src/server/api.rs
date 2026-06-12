@@ -9,7 +9,6 @@ use axum::{
     response::{Html, IntoResponse, Response},
 };
 use serde::Deserialize;
-use tracing::error;
 
 const API_LIMIT: usize = 10_000;
 const API_FILTER_PARAM_MAX_BYTES: usize = 256;
@@ -389,6 +388,12 @@ pub async fn add_exception(
     ensure_write_enabled(&state)?;
     let code = required_param(&request.code, "code", API_FILTER_PARAM_MAX_BYTES)?;
     let reason = required_param(&request.reason, "reason", API_REF_PARAM_MAX_BYTES)?;
+    crate::security::validate_exception_username(request.username.as_deref())
+        .map_err(ApiError::bad_request_from_anyhow)?;
+    crate::security::validate_exception_fingerprint(request.fingerprint.as_deref())
+        .map_err(ApiError::bad_request_from_anyhow)?;
+    crate::security::validate_exception_expires_at(request.expires_at.as_deref())
+        .map_err(ApiError::bad_request_from_anyhow)?;
     Ok(Json(crate::db::add_risk_exception(
         &state.db_path,
         &crate::models::NewRiskException {
@@ -483,6 +488,13 @@ impl ApiError {
         Self {
             status: StatusCode::FORBIDDEN,
             message: message.to_string(),
+        }
+    }
+
+    fn bad_request_from_anyhow(error: anyhow::Error) -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            message: error.to_string(),
         }
     }
 }
@@ -628,7 +640,7 @@ fn required_param<'a>(value: &'a str, name: &str, max_bytes: usize) -> Result<&'
 
 impl From<anyhow::Error> for ApiError {
     fn from(error: anyhow::Error) -> Self {
-        error!(error = ?error, "api request failed");
+        tracing::debug!(error = %error, "api request failed");
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             message: "internal server error".to_string(),
@@ -655,6 +667,13 @@ mod tests {
     #[test]
     fn constant_time_eq_rejects_different_lengths() {
         assert!(!constant_time_eq("short", "longer-value"));
+    }
+
+    #[test]
+    fn rejects_invalid_exception_username() {
+        let error = crate::security::validate_exception_username(Some("bad user"))
+            .expect_err("invalid username");
+        assert!(error.to_string().contains("username"));
     }
 
     #[test]

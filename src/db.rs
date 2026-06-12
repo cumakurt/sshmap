@@ -17,7 +17,7 @@ use crate::models::{
 use crate::target::{hostname_hint, is_ip_address, parse_host_target};
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
-use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, TransactionBehavior, params};
 use std::path::Path;
 use uuid::Uuid;
 
@@ -745,7 +745,7 @@ pub fn replace_normalized_analysis(path: &Path, analysis: &NormalizedAnalysis) -
         .with_context(|| format!("failed to open database at {}", path.display()))?;
     apply_pragmas(&connection)?;
 
-    let tx = connection.transaction()?;
+    let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     clear_normalized_tables(&tx)?;
 
     for user in &analysis.users {
@@ -870,7 +870,7 @@ pub fn replace_risks(path: &Path, risks: &[GeneratedRisk]) -> Result<()> {
         .with_context(|| format!("failed to open database at {}", path.display()))?;
     apply_pragmas(&connection)?;
 
-    let tx = connection.transaction()?;
+    let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     tx.execute("DELETE FROM risks", [])?;
 
     for risk in risks {

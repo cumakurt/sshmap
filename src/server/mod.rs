@@ -17,9 +17,21 @@ pub struct ServerConfig {
     pub listen: SocketAddr,
     pub read_only: bool,
     pub allow_write_api: bool,
+    pub require_token: bool,
     pub read_token: Option<String>,
     pub write_token: Option<String>,
     pub dashboard_dir: Option<PathBuf>,
+}
+
+pub fn require_token_from_env() -> bool {
+    std::env::var("SSHMAP_REQUIRE_TOKEN")
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes"
+            )
+        })
+        .unwrap_or(false)
 }
 
 #[derive(Debug, Clone)]
@@ -53,10 +65,11 @@ pub async fn run_server(config: ServerConfig) -> Result<()> {
         bail!("--token or --write-token is required when --allow-write-api is enabled");
     }
 
+    let require_token = config.require_token || require_token_from_env();
     if config.read_token.is_none() && config.write_token.is_none() {
-        if !config.listen.ip().is_loopback() {
+        if !config.listen.ip().is_loopback() || require_token {
             bail!(
-                "--token is required when listening on a non-loopback address ({})",
+                "--token is required when listening on {} or when --require-token / SSHMAP_REQUIRE_TOKEN is set",
                 config.listen.ip()
             );
         }

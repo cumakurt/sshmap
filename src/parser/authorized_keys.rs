@@ -258,7 +258,7 @@ impl<'a> KeyBlobCursor<'a> {
         let len = u32::from_be_bytes(
             self.bytes[self.offset..self.offset + 4]
                 .try_into()
-                .expect("slice length checked"),
+                .map_err(|_| anyhow::anyhow!("truncated key blob length"))?,
         ) as usize;
         self.offset += 4;
         anyhow::ensure!(

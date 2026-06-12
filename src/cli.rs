@@ -1088,6 +1088,10 @@ pub struct ServeArgs {
     #[arg(long)]
     pub allow_write_api: bool,
 
+    /// Require API token even when listening on loopback (also enabled by SSHMAP_REQUIRE_TOKEN=1)
+    #[arg(long)]
+    pub require_token: bool,
+
     /// Directory containing a built React dashboard (index.html + assets)
     #[arg(long, value_name = "DIR")]
     pub dashboard: Option<PathBuf>,

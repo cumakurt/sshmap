@@ -1,14 +1,15 @@
 use crate::baseline;
 use crate::discovery::DiscoveryResult;
 use crate::models::{
-    BaselineDiffRecord, BaselineRecord, BaselineRiskRecord, BaselineSummary, DatabaseStats,
-    DetailedDatabaseStats, GeneratedRisk, GraphEdgeRecord, GraphNodeRecord, HostDetailRecord,
-    HostQuery, HostRecord, HostScanResult, ImportSummary, ImportedHost, KeyDetailRecord,
-    KeyLocationRecord, KeySummaryRecord, KnownHostEntryRecord, NewRiskException,
-    NormalizedAnalysis, ParsedAuthorizedKey, ParsedGroup, ParsedPublicKey, ParsedUser,
-    RawEvidenceForAnalysis, RawEvidenceRecord, RemoteScanSummary, RiskExceptionRecord, RiskQuery,
-    RiskRecord, ScanRunSummary, SshClientConfigEntryRecord, SudoRuleRecord, UserAccountRecord,
-    UserDetailRecord, UserQuery, UserSummaryRecord,
+    BaselineDiffRecord, BaselineRecord, BaselineRiskRecord, BaselineSummary,
+    DataQualityFindingRecord, DatabaseStats, DetailedDatabaseStats, GeneratedRisk, GraphEdgeRecord,
+    GraphNodeRecord, HostAliasRecord, HostDetailRecord, HostQuery, HostRecord, HostScanResult,
+    ImportSummary, ImportedHost, KeyDetailRecord, KeyLocationRecord, KeySummaryRecord,
+    KnownHostEntryRecord, NewRiskException, NormalizedAnalysis, ParsedAuthorizedKey, ParsedGroup,
+    ParsedHostAlias, ParsedPublicKey, ParsedUser, RawEvidenceForAnalysis, RawEvidenceRecord,
+    RemoteScanSummary, RiskExceptionRecord, RiskQuery, RiskRecord, ScanRunSummary,
+    SshClientConfigEntryRecord, SudoRuleRecord, UserAccountRecord, UserDetailRecord, UserQuery,
+    UserSummaryRecord,
 };
 use crate::target::{hostname_hint, is_ip_address, parse_host_target};
 use anyhow::{Context, Result, bail};
@@ -26,6 +27,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (6, include_str!("../migrations/006_risk_exceptions.sql")),
     (7, include_str!("../migrations/007_client_data.sql")),
     (8, include_str!("../migrations/008_app_metadata.sql")),
+    (
+        9,
+        include_str!("../migrations/009_host_aliases_quality.sql"),
+    ),
 ];
 
 pub fn initialize_database(path: &Path) -> Result<()> {
@@ -84,6 +89,8 @@ fn load_detailed_database_stats_connection(
         graph_edges: count_rows(connection, "graph_edges")?,
         known_hosts_entries: count_rows(connection, "known_hosts_entries")?,
         ssh_client_config_entries: count_rows(connection, "ssh_client_config_entries")?,
+        host_aliases: count_rows(connection, "host_aliases")?,
+        data_quality_findings: count_rows(connection, "data_quality_findings")?,
         risk_exceptions: count_rows(connection, "risk_exceptions")?,
         baselines: count_rows(connection, "baselines")?,
         last_analysis_finished_at: get_app_metadata_connection(
@@ -496,6 +503,24 @@ pub fn store_imported_hosts(
     Ok(summary)
 }
 
+pub fn store_host_aliases(path: &Path, aliases: &[ParsedHostAlias]) -> Result<ImportSummary> {
+    let mut connection = Connection::open(path)
+        .with_context(|| format!("failed to open database at {}", path.display()))?;
+    apply_pragmas(&connection)?;
+    apply_migrations(&connection)?;
+
+    let tx = connection.transaction()?;
+    let mut imported = 0_usize;
+    for alias in aliases {
+        if upsert_host_alias(&tx, alias)? {
+            imported += 1;
+        }
+    }
+    tx.commit()?;
+
+    Ok(ImportSummary { imported })
+}
+
 pub fn store_imported_evidence(
     path: &Path,
     source: &str,
@@ -659,8 +684,8 @@ pub fn replace_normalized_analysis(path: &Path, analysis: &NormalizedAnalysis) -
                 host_id, host_pattern, hostname, ssh_user, port, identity_file,
                 proxy_jump, proxy_command, forward_agent, local_forward,
                 remote_forward, dynamic_forward, strict_host_key_checking,
-                source_file, line_number
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                include_file, source_file, line_number
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
             params![
                 entry.host_id,
                 entry.host_pattern,
@@ -675,10 +700,15 @@ pub fn replace_normalized_analysis(path: &Path, analysis: &NormalizedAnalysis) -
                 entry.remote_forward,
                 entry.dynamic_forward,
                 entry.strict_host_key_checking,
+                entry.include_file,
                 entry.source_file,
                 entry.line_number
             ],
         )?;
+    }
+
+    for alias in &analysis.host_aliases {
+        upsert_host_alias(&tx, alias)?;
     }
 
     tx.commit()?;
@@ -1386,6 +1416,140 @@ pub fn list_ssh_client_config_entries_read_only(
     })
 }
 
+pub fn list_host_aliases_read_only(path: &Path, limit: usize) -> Result<Vec<HostAliasRecord>> {
+    with_read_only_connection(path, |connection| {
+        list_host_aliases_connection(connection, limit)
+    })
+}
+
+fn list_host_aliases_connection(
+    connection: &Connection,
+    limit: usize,
+) -> Result<Vec<HostAliasRecord>> {
+    let mut statement = connection.prepare(
+        "SELECT
+            alias.id, alias.host_id, host.hostname, host.ip_address,
+            alias.ip_address, alias.alias, alias.alias_kind, alias.source,
+            alias.source_file, alias.line_number, alias.confidence
+         FROM host_aliases alias
+         JOIN hosts host ON host.id = alias.host_id
+         ORDER BY alias.id
+         LIMIT ?1",
+    )?;
+    let rows = statement.query_map(params![limit as i64], |row| {
+        Ok(HostAliasRecord {
+            id: row.get(0)?,
+            host_id: row.get(1)?,
+            hostname: row.get(2)?,
+            host_ip_address: row.get(3)?,
+            ip_address: row.get(4)?,
+            alias: row.get(5)?,
+            alias_kind: row.get(6)?,
+            source: row.get(7)?,
+            source_file: row.get(8)?,
+            line_number: row.get(9)?,
+            confidence: row.get(10)?,
+        })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .context("failed to list host aliases")
+}
+
+pub fn list_data_quality_findings_read_only(
+    path: &Path,
+    limit: usize,
+) -> Result<Vec<DataQualityFindingRecord>> {
+    with_read_only_connection(path, |connection| {
+        list_data_quality_findings_connection(connection, limit)
+    })
+}
+
+fn list_data_quality_findings_connection(
+    connection: &Connection,
+    limit: usize,
+) -> Result<Vec<DataQualityFindingRecord>> {
+    let mut statement = connection.prepare(
+        "SELECT
+            dq.id, dq.host_id, h.hostname, h.ip_address, dq.code, dq.severity,
+            dq.message, dq.evidence, dq.created_at
+         FROM data_quality_findings dq
+         LEFT JOIN hosts h ON h.id = dq.host_id
+         ORDER BY
+            CASE dq.severity WHEN 'HIGH' THEN 0 WHEN 'MEDIUM' THEN 1 ELSE 2 END,
+            dq.id
+         LIMIT ?1",
+    )?;
+    let rows = statement.query_map(params![limit as i64], |row| {
+        Ok(DataQualityFindingRecord {
+            id: row.get(0)?,
+            host_id: row.get(1)?,
+            hostname: row.get(2)?,
+            ip_address: row.get(3)?,
+            code: row.get(4)?,
+            severity: row.get(5)?,
+            message: row.get(6)?,
+            evidence: row.get(7)?,
+            created_at: row.get(8)?,
+        })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .context("failed to list data quality findings")
+}
+
+pub fn refresh_data_quality_findings(path: &Path) -> Result<usize> {
+    initialize_database(path)?;
+    let connection = Connection::open(path)
+        .with_context(|| format!("failed to open database at {}", path.display()))?;
+    apply_pragmas(&connection)?;
+    refresh_data_quality_findings_connection(&connection)
+}
+
+fn refresh_data_quality_findings_connection(connection: &Connection) -> Result<usize> {
+    connection.execute("DELETE FROM data_quality_findings", [])?;
+    let created_at = Utc::now().to_rfc3339();
+    let mut inserted = 0_usize;
+
+    inserted += connection.execute(
+        "INSERT INTO data_quality_findings (host_id, code, severity, message, evidence, created_at)
+         SELECT h.id, 'HOST_MISSING_NAME', 'MEDIUM',
+            'Host has no hostname or FQDN',
+            h.ip_address || ':' || h.port,
+            ?1
+         FROM hosts h
+         WHERE h.hostname IS NULL AND h.fqdn IS NULL",
+        params![created_at],
+    )?;
+
+    inserted += connection.execute(
+        "INSERT INTO data_quality_findings (host_id, code, severity, message, evidence, created_at)
+         SELECT h.id, 'SSH_OPEN_WITHOUT_USERS', 'LOW',
+            'SSH-open host has no normalized user evidence',
+            h.ip_address || ':' || h.port,
+            ?1
+         FROM hosts h
+         LEFT JOIN users u ON u.host_id = h.id
+         WHERE h.ssh_open = 1
+         GROUP BY h.id
+         HAVING COUNT(u.id) = 0",
+        params![created_at],
+    )?;
+
+    inserted += connection.execute(
+        "INSERT INTO data_quality_findings (host_id, code, severity, message, evidence, created_at)
+         SELECT NULL, 'HOST_ALIAS_CONFLICT', 'HIGH',
+            'Same hostname alias maps to multiple IP addresses',
+            alias || ' -> ' || GROUP_CONCAT(DISTINCT ip_address),
+            ?1
+         FROM host_aliases
+         WHERE confidence <> 'LOW'
+         GROUP BY alias
+         HAVING COUNT(DISTINCT ip_address) > 1",
+        params![created_at],
+    )?;
+
+    Ok(inserted)
+}
+
 fn list_ssh_client_config_entries_connection(
     connection: &Connection,
     limit: usize,
@@ -1395,7 +1559,8 @@ fn list_ssh_client_config_entries_connection(
             cfg.id, cfg.host_id, host.hostname, host.ip_address, cfg.host_pattern,
             cfg.hostname, cfg.ssh_user, cfg.port, cfg.identity_file, cfg.proxy_jump,
             cfg.proxy_command, cfg.forward_agent, cfg.local_forward, cfg.remote_forward,
-            cfg.dynamic_forward, cfg.strict_host_key_checking, cfg.source_file, cfg.line_number
+            cfg.dynamic_forward, cfg.strict_host_key_checking, cfg.include_file,
+            cfg.source_file, cfg.line_number
          FROM ssh_client_config_entries cfg
          JOIN hosts host ON host.id = cfg.host_id
          ORDER BY cfg.id
@@ -1419,8 +1584,9 @@ fn list_ssh_client_config_entries_connection(
             remote_forward: row.get(13)?,
             dynamic_forward: row.get(14)?,
             strict_host_key_checking: row.get(15)?,
-            source_file: row.get(16)?,
-            line_number: row.get(17)?,
+            include_file: row.get(16)?,
+            source_file: row.get(17)?,
+            line_number: row.get(18)?,
         })
     })?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
@@ -1809,7 +1975,15 @@ fn find_host_id_for_target(
         .query_row(
             "SELECT id FROM hosts
              WHERE port = ?1
-               AND (ip_address = ?2 OR hostname = ?2 OR fqdn = ?2)
+               AND (
+                    ip_address = ?2
+                    OR hostname = ?2
+                    OR fqdn = ?2
+                    OR EXISTS (
+                        SELECT 1 FROM host_aliases ha
+                        WHERE ha.host_id = hosts.id AND ha.alias = ?2
+                    )
+               )
              ORDER BY id
              LIMIT 1",
             params![port, target],
@@ -1878,6 +2052,61 @@ fn upsert_imported_host(connection: &Connection, host: &ImportedHost) -> Result<
     Ok(())
 }
 
+fn upsert_host_by_ip(
+    connection: &Connection,
+    ip_address: &str,
+    port: i64,
+    hostname: Option<&str>,
+    source: &str,
+) -> Result<i64> {
+    let now = Utc::now().to_rfc3339();
+    connection.execute(
+        "INSERT INTO hosts (
+            hostname, ip_address, port, ssh_open, first_seen, last_seen, source
+        ) VALUES (?1, ?2, ?3, 0, ?4, ?5, ?6)
+        ON CONFLICT(ip_address, port) DO UPDATE SET
+            hostname = COALESCE(hosts.hostname, excluded.hostname),
+            last_seen = excluded.last_seen",
+        params![hostname, ip_address, port, now, now, source],
+    )?;
+
+    connection
+        .query_row(
+            "SELECT id FROM hosts WHERE ip_address = ?1 AND port = ?2",
+            params![ip_address, port],
+            |row| row.get::<_, i64>(0),
+        )
+        .context("failed to resolve host by ip")
+}
+
+fn upsert_host_alias(connection: &Connection, alias: &ParsedHostAlias) -> Result<bool> {
+    if alias.confidence == "LOW" {
+        return Ok(false);
+    }
+
+    let hostname = (alias.alias_kind == "canonical" && alias.confidence != "LOW")
+        .then_some(alias.alias.as_str());
+    let host_id = upsert_host_by_ip(connection, &alias.ip_address, 22, hostname, &alias.source)?;
+
+    connection.execute(
+        "INSERT OR IGNORE INTO host_aliases (
+            host_id, ip_address, alias, alias_kind, source, source_file, line_number, confidence
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            host_id,
+            alias.ip_address,
+            alias.alias,
+            alias.alias_kind,
+            alias.source,
+            alias.source_file,
+            alias.line_number,
+            alias.confidence
+        ],
+    )?;
+
+    Ok(true)
+}
+
 fn upsert_import_host_by_target(connection: &Connection, target: &str) -> Result<i64> {
     let (ip_address, port, hostname) = parse_host_target(target)
         .with_context(|| format!("invalid import host target: {target}"))?;
@@ -1908,6 +2137,8 @@ fn upsert_import_host_by_target(connection: &Connection, target: &str) -> Result
 
 fn clear_normalized_tables(connection: &Connection) -> Result<()> {
     connection.execute("DELETE FROM risks", [])?;
+    connection.execute("DELETE FROM data_quality_findings", [])?;
+    connection.execute("DELETE FROM host_aliases", [])?;
     connection.execute("DELETE FROM ssh_client_config_entries", [])?;
     connection.execute("DELETE FROM known_hosts_entries", [])?;
     connection.execute("DELETE FROM sudo_rules", [])?;

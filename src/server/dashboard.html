@@ -33,7 +33,12 @@
     .graph-toolbar { display:flex; gap:10px; margin-bottom:12px; flex-wrap:wrap; align-items:center; }
     .graph-toolbar button { background:#172033; color:var(--text); border:1px solid #243044; border-radius:8px; padding:8px 12px; cursor:pointer; }
   </style>
-  <script src="https://cdn.jsdelivr.net/npm/cytoscape@3.30.4/dist/cytoscape.min.js"></script>
+  <script
+    src="https://cdn.jsdelivr.net/npm/cytoscape@3.30.4/dist/cytoscape.min.js"
+    integrity="sha384-H3uzGzTfGHUAumB8+s4GEdfFwzAceN9wCCndN8AXubWKFIPuBSWKKtWDx7RhSf/z"
+    crossorigin="anonymous"
+    referrerpolicy="no-referrer"
+  ></script>
 </head>
 <body>
   <header>
@@ -52,10 +57,11 @@
     <section id="view-keys" class="hidden"></section>
     <section id="view-risks" class="hidden"></section>
     <section id="view-graph" class="hidden"></section>
+    <section id="view-quality" class="hidden"></section>
     <section id="view-tools" class="hidden"></section>
   </main>
   <script>
-    const views = ["dashboard","hosts","users","keys","risks","graph","tools"];
+    const views = ["dashboard","hosts","users","keys","risks","graph","quality","tools"];
     const nav = document.getElementById("nav");
     views.forEach(name => {
       const button = document.createElement("button");
@@ -88,6 +94,22 @@
       el.classList.add("hidden");
     }
 
+    function escapeHtml(value) {
+      return String(value ?? "").replace(/[&<>"']/g, function(character) {
+        return {
+          "&": "&amp;",
+          "<": "&lt;",
+          ">": "&gt;",
+          '"': "&quot;",
+          "'": "&#39;"
+        }[character];
+      });
+    }
+
+    function escapeClassToken(value) {
+      return String(value ?? "").replace(/[^A-Za-z0-9_-]/g, "");
+    }
+
     function showView(name) {
       views.forEach(view => {
         document.getElementById("view-" + view).classList.toggle("hidden", view !== name);
@@ -97,7 +119,7 @@
     }
 
     function metricCard(label, value) {
-      return '<div class="card"><span>' + label + '</span><strong>' + value + '</strong></div>';
+      return '<div class="card"><span>' + escapeHtml(label) + '</span><strong>' + escapeHtml(value) + '</strong></div>';
     }
 
     const loaders = {
@@ -155,28 +177,42 @@
         window.__graphEdges = edges;
         showGraphCanvas();
       },
+      async quality() {
+        const findings = await api("/api/data-quality");
+        const aliases = await api("/api/host-aliases");
+        document.getElementById("view-quality").innerHTML =
+          '<h2>Data Quality</h2>' +
+          table(["Severity","Code","Host","Message","Evidence"],
+            findings.map(function(f) { return [f.severity, f.code, f.hostname || f.ip_address || "-", f.message, f.evidence || "-"]; })) +
+          '<h2>Host Aliases</h2>' +
+          table(["Alias","IP","Host","Kind","Source","Confidence"],
+            aliases.map(function(a) { return [a.alias, a.ip_address, a.hostname || a.host_ip_address, a.alias_kind, a.source_file || a.source, a.confidence]; }));
+      },
       tools() {
         document.getElementById("view-tools").innerHTML =
           '<div class="toolbar"><label>API token <input id="token-input" placeholder="optional"></label><button onclick="saveToken()">Save token</button></div>' +
           '<div class="toolbar"><label>Path from <input id="path-from" placeholder="key:SHA256:..."></label><label>Path to <input id="path-to" placeholder="host:web01"></label><button onclick="runPath()">Find path</button></div>' +
           '<div class="toolbar"><label>Blast radius user <input id="blast-user" placeholder="deploy"></label><button onclick="runBlast()">Analyze</button><button onclick="loadExceptions()">Load exceptions</button></div>' +
+          '<div class="toolbar"><label>Risk code <input id="remediation-code" placeholder="SSH_PASSWORD_AUTH_ENABLED"></label><button onclick="loadRemediation()">Load remediation</button></div>' +
           '<pre id="tools-output">Use the controls above to query path and blast radius analysis.</pre>';
         document.getElementById("token-input").value = localStorage.getItem("sshmap_token") || "";
       }
     };
 
     function table(headers, rows) {
-      return '<table><thead><tr>' + headers.map(h => '<th>' + h + '</th>').join('') + '</tr></thead><tbody>' +
-        rows.map(row => '<tr>' + row.map(cell => '<td>' + cell + '</td>').join('') + '</tr>').join('') +
+      return '<table><thead><tr>' + headers.map(h => '<th>' + escapeHtml(h) + '</th>').join('') + '</tr></thead><tbody>' +
+        rows.map(row => '<tr>' + row.map(cell => '<td>' + escapeHtml(cell) + '</td>').join('') + '</tr>').join('') +
         '</tbody></table>';
     }
 
     function riskTable(risks) {
       return '<table><thead><tr><th>ID</th><th>Severity</th><th>Code</th><th>Target</th><th>Title</th></tr></thead><tbody>' +
         risks.map(function(r) {
-          return '<tr style="cursor:pointer" onclick="loadRiskDetail(' + r.id + ')"><td>' +
-            r.id + '</td><td>' + severityCell(r.severity) + '</td><td>' +
-            r.risk_code + '</td><td>' + riskTarget(r) + '</td><td>' + r.title + '</td></tr>';
+          const id = Number(r.id);
+          const clickHandler = Number.isSafeInteger(id) ? ' onclick="loadRiskDetail(' + id + ')"' : "";
+          return '<tr style="cursor:pointer"' + clickHandler + '><td>' +
+            escapeHtml(r.id) + '</td><td>' + severityCell(r.severity) + '</td><td>' +
+            escapeHtml(r.risk_code) + '</td><td>' + escapeHtml(riskTarget(r)) + '</td><td>' + escapeHtml(r.title) + '</td></tr>';
         }).join('') +
         '</tbody></table>';
     }
@@ -187,7 +223,7 @@
     }
 
     function severityCell(value) {
-      return '<span class="severity-' + value + '">' + value + '</span>';
+      return '<span class="severity-' + escapeClassToken(value) + '">' + escapeHtml(value) + '</span>';
     }
 
     function riskTarget(risk) {
@@ -270,6 +306,12 @@
 
     async function loadExceptions() {
       const result = await api("/api/exceptions");
+      document.getElementById("tools-output").textContent = JSON.stringify(result, null, 2);
+    }
+
+    async function loadRemediation() {
+      const code = document.getElementById("remediation-code").value.trim();
+      const result = await api("/api/remediation/" + encodeURIComponent(code));
       document.getElementById("tools-output").textContent = JSON.stringify(result, null, 2);
     }
 

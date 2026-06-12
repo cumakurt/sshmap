@@ -4,6 +4,7 @@ import { BrowserRouter, Route, Routes } from "react-router-dom";
 import { Layout } from "./components/Layout";
 import { api, type ApiSummary } from "./api";
 import { DashboardPage } from "./pages/DashboardPage";
+import { DataQualityPage } from "./pages/DataQualityPage";
 import { HostDetailPage } from "./pages/HostDetailPage";
 import { HostsPage } from "./pages/HostsPage";
 import { KeyDetailPage } from "./pages/KeyDetailPage";
@@ -49,6 +50,7 @@ function AppShell() {
           <Route path="keys/:id" element={<KeyDetailPage />} />
           <Route path="risks" element={<RisksPage />} />
           <Route path="risks/:id" element={<RiskDetailPage />} />
+          <Route path="data-quality" element={<DataQualityPage />} />
           <Route
             path="graph"
             element={

@@ -260,6 +260,7 @@ fn serve_api_requires_token_and_returns_summary() {
     assert!(String::from_utf8_lossy(&summary.stdout).contains("critical_risks"));
 
     let _ = server.kill();
+    let _ = server.wait();
 }
 
 #[test]

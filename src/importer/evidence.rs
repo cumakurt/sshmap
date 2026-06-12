@@ -87,6 +87,102 @@ pub fn import_json_report(path: &Path, db_path: &Path) -> Result<crate::models::
     store_hosts(db_path, "json", &imported_hosts)
 }
 
+pub fn import_auto(
+    path: &Path,
+    host: Option<&str>,
+    username: Option<&str>,
+    db_path: &Path,
+) -> Result<crate::models::ImportSummary> {
+    let content = fs::read_to_string(path)
+        .with_context(|| format!("failed to read import file {}", path.display()))?;
+    let Some(kind) = crate::parser::registry::detect_parser(path, &content) else {
+        bail!("could not auto-detect parser for {}", path.display());
+    };
+
+    import_detected_file(kind, path, host, username, db_path)
+}
+
+pub fn import_bundle(
+    dir: &Path,
+    host: Option<&str>,
+    username: Option<&str>,
+    db_path: &Path,
+) -> Result<crate::models::ImportSummary> {
+    if !dir.is_dir() {
+        bail!("bundle directory not found: {}", dir.display());
+    }
+
+    let mut imported = 0_usize;
+    for path in list_files_recursive(dir)? {
+        match import_auto(&path, host, username, db_path) {
+            Ok(summary) => imported += summary.imported,
+            Err(error) if error.to_string().contains("could not auto-detect parser") => {}
+            Err(error) => return Err(error),
+        }
+    }
+
+    Ok(crate::models::ImportSummary { imported })
+}
+
+fn import_detected_file(
+    kind: crate::parser::registry::ParserKind,
+    path: &Path,
+    host: Option<&str>,
+    username: Option<&str>,
+    db_path: &Path,
+) -> Result<crate::models::ImportSummary> {
+    if kind == crate::parser::registry::ParserKind::HostsFile {
+        return crate::importer::hosts_file::import_hosts_file(path, db_path);
+    }
+    if kind == crate::parser::registry::ParserKind::KnownHosts {
+        return crate::importer::known_hosts::import_known_hosts(path, db_path);
+    }
+
+    let host = host.ok_or_else(|| {
+        anyhow::anyhow!(
+            "--host is required when auto-importing {} evidence",
+            kind.evidence_type()
+        )
+    })?;
+
+    let username = if kind.requires_user() {
+        username
+            .map(str::to_string)
+            .or_else(|| infer_username_from_path(path))
+            .ok_or_else(|| anyhow::anyhow!("--user is required for authorized_keys evidence"))?
+            .into()
+    } else {
+        None
+    };
+
+    import_file_evidence(
+        kind.source(),
+        kind.evidence_type(),
+        path,
+        host,
+        username.as_deref(),
+        db_path,
+    )
+}
+
+fn infer_username_from_path(path: &Path) -> Option<String> {
+    crate::parser::authorized_keys::username_from_authorized_keys_path(&path.to_string_lossy())
+}
+
+fn list_files_recursive(dir: &Path) -> Result<Vec<std::path::PathBuf>> {
+    let mut files = Vec::new();
+    for entry in fs::read_dir(dir).with_context(|| format!("failed to read {}", dir.display()))? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            files.extend(list_files_recursive(&path)?);
+        } else if path.is_file() {
+            files.push(path);
+        }
+    }
+    Ok(files)
+}
+
 fn authorized_keys_source_path(username: &str) -> String {
     if username == "root" {
         "/root/.ssh/authorized_keys".to_string()
@@ -113,5 +209,18 @@ mod import_tests {
             authorized_keys_source_path("deploy"),
             "/home/deploy/.ssh/authorized_keys"
         );
+    }
+
+    #[test]
+    fn auto_import_detects_hosts_file() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let hosts_path = temp_dir.path().join("hosts");
+        std::fs::write(&hosts_path, "10.0.0.10 web01 web01.internal\n").expect("hosts");
+        let db_path = temp_dir.path().join("auto.db");
+        crate::db::initialize_database(&db_path).expect("db");
+
+        let summary = import_auto(&hosts_path, None, None, &db_path).expect("auto import");
+
+        assert_eq!(summary.imported, 1);
     }
 }

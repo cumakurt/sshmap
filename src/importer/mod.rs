@@ -1,6 +1,7 @@
 pub mod ansible;
 pub mod csv;
 pub mod evidence;
+pub mod hosts_file;
 pub mod known_hosts;
 pub mod nmap;
 
@@ -11,10 +12,13 @@ use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
 pub enum ImportKind {
+    Auto,
+    Bundle,
     Ansible,
     Nmap,
     Csv,
     KnownHosts,
+    HostsFile,
     SshConfig,
     SshdConfig,
     AuthorizedKeys,
@@ -33,12 +37,25 @@ pub struct ImportRequest {
 
 pub fn run_import(request: ImportRequest) -> Result<ImportSummary> {
     match request.kind {
+        ImportKind::Auto => evidence::import_auto(
+            &request.file,
+            request.host.as_deref(),
+            request.username.as_deref(),
+            &request.db_path,
+        ),
+        ImportKind::Bundle => evidence::import_bundle(
+            &request.file,
+            request.host.as_deref(),
+            request.username.as_deref(),
+            &request.db_path,
+        ),
         ImportKind::Ansible => ansible::import_ansible_inventory(&request.file, &request.db_path),
         ImportKind::Nmap => nmap::import_nmap_xml(&request.file, &request.db_path),
         ImportKind::Csv => {
             csv::import_csv_inventory(&request.file, request.mapping.as_deref(), &request.db_path)
         }
         ImportKind::KnownHosts => known_hosts::import_known_hosts(&request.file, &request.db_path),
+        ImportKind::HostsFile => hosts_file::import_hosts_file(&request.file, &request.db_path),
         ImportKind::SshConfig => evidence::import_file_evidence(
             "ssh_config",
             "ssh_config",

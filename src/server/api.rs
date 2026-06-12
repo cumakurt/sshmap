@@ -12,6 +12,8 @@ use serde::Deserialize;
 use tracing::error;
 
 const API_LIMIT: usize = 10_000;
+const API_FILTER_PARAM_MAX_BYTES: usize = 256;
+const API_REF_PARAM_MAX_BYTES: usize = 512;
 const VALID_RISK_SEVERITIES: &[&str] = &["CRITICAL", "HIGH", "MEDIUM", "LOW"];
 
 pub async fn health() -> &'static str {
@@ -23,14 +25,17 @@ pub async fn dashboard() -> Html<&'static str> {
 }
 
 fn constant_time_eq(left: &str, right: &str) -> bool {
-    if left.len() != right.len() {
-        return false;
+    let left = left.as_bytes();
+    let right = right.as_bytes();
+    let mut diff = left.len() ^ right.len();
+    let max_len = left.len().max(right.len());
+
+    for index in 0..max_len {
+        let left_byte = left.get(index).copied().unwrap_or(0);
+        let right_byte = right.get(index).copied().unwrap_or(0);
+        diff |= usize::from(left_byte ^ right_byte);
     }
 
-    let mut diff = 0u8;
-    for (left_byte, right_byte) in left.bytes().zip(right.bytes()) {
-        diff |= left_byte ^ right_byte;
-    }
     diff == 0
 }
 
@@ -63,15 +68,16 @@ pub async fn list_hosts(
     State(state): State<AppState>,
     Query(query): Query<HostListQuery>,
 ) -> Result<Json<Vec<crate::models::HostRecord>>, ApiError> {
+    let source = optional_param(query.source, "source", API_FILTER_PARAM_MAX_BYTES)?
+        .map(|value| value.to_ascii_lowercase());
+    let search = optional_param(query.q, "q", API_FILTER_PARAM_MAX_BYTES)?;
+
     Ok(Json(crate::db::list_hosts_read_only_with_query(
         &state.db_path,
         &crate::models::HostQuery {
             ssh_open: query.ssh_open,
-            source: query.source.map(|value| value.to_ascii_lowercase()),
-            search: query
-                .q
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty()),
+            source,
+            search,
             limit: query.limit.unwrap_or(1000).min(API_LIMIT),
         },
     )?))
@@ -89,7 +95,8 @@ pub async fn get_host(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<crate::models::HostDetailRecord>, ApiError> {
-    let Some(host) = crate::db::get_host_detail_read_only(&state.db_path, &id)? else {
+    let id = required_param(&id, "host id", API_REF_PARAM_MAX_BYTES)?;
+    let Some(host) = crate::db::get_host_detail_read_only(&state.db_path, id)? else {
         return Err(ApiError::not_found("host not found"));
     };
     Ok(Json(host))
@@ -99,13 +106,12 @@ pub async fn list_users(
     State(state): State<AppState>,
     Query(query): Query<UserListQuery>,
 ) -> Result<Json<Vec<crate::models::UserSummaryRecord>>, ApiError> {
+    let search = optional_param(query.q, "q", API_FILTER_PARAM_MAX_BYTES)?;
+
     Ok(Json(crate::db::list_user_summaries_read_only_with_query(
         &state.db_path,
         &crate::models::UserQuery {
-            search: query
-                .q
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty()),
+            search,
             min_hosts: query.min_hosts,
             min_risks: query.min_risks,
             limit: query.limit.unwrap_or(500).min(API_LIMIT),
@@ -125,7 +131,8 @@ pub async fn get_user(
     State(state): State<AppState>,
     Path(username): Path<String>,
 ) -> Result<Json<crate::models::UserDetailRecord>, ApiError> {
-    let Some(user) = crate::db::get_user_detail_read_only(&state.db_path, &username)? else {
+    let username = required_param(&username, "username", API_FILTER_PARAM_MAX_BYTES)?;
+    let Some(user) = crate::db::get_user_detail_read_only(&state.db_path, username)? else {
         return Err(ApiError::not_found("user not found"));
     };
     Ok(Json(user))
@@ -155,7 +162,8 @@ pub async fn get_key(
     State(state): State<AppState>,
     Path(target): Path<String>,
 ) -> Result<Json<crate::models::KeyDetailRecord>, ApiError> {
-    let Some(key) = crate::db::get_key_detail_read_only(&state.db_path, &target)? else {
+    let target = required_param(&target, "key", API_REF_PARAM_MAX_BYTES)?;
+    let Some(key) = crate::db::get_key_detail_read_only(&state.db_path, target)? else {
         return Err(ApiError::not_found("key not found"));
     };
     Ok(Json(key))
@@ -172,10 +180,8 @@ pub async fn list_risks(
     State(state): State<AppState>,
     Query(query): Query<RiskListQuery>,
 ) -> Result<Json<Vec<crate::models::RiskRecord>>, ApiError> {
-    let severity = query
-        .severity
-        .map(|value| value.trim().to_ascii_uppercase())
-        .filter(|value| !value.is_empty());
+    let severity = optional_param(query.severity, "severity", API_FILTER_PARAM_MAX_BYTES)?
+        .map(|value| value.to_ascii_uppercase());
     if let Some(severity) = &severity
         && !VALID_RISK_SEVERITIES.contains(&severity.as_str())
     {
@@ -188,10 +194,8 @@ pub async fn list_risks(
         &state.db_path,
         &RiskQuery {
             severity,
-            code: query
-                .code
-                .map(|value| value.trim().to_ascii_uppercase())
-                .filter(|value| !value.is_empty()),
+            code: optional_param(query.code, "code", API_FILTER_PARAM_MAX_BYTES)?
+                .map(|value| value.to_ascii_uppercase()),
             limit: query.limit.unwrap_or(100).min(API_LIMIT),
         },
     )?))
@@ -232,14 +236,8 @@ pub async fn find_path(
     State(state): State<AppState>,
     Query(query): Query<PathQuery>,
 ) -> Result<Json<crate::models::GraphPathRecord>, ApiError> {
-    let from = query.from.trim();
-    let to = query.to.trim();
-    if from.is_empty() {
-        return Err(ApiError::bad_request("from parameter is required"));
-    }
-    if to.is_empty() {
-        return Err(ApiError::bad_request("to parameter is required"));
-    }
+    let from = required_param(&query.from, "from", API_REF_PARAM_MAX_BYTES)?;
+    let to = required_param(&query.to, "to", API_REF_PARAM_MAX_BYTES)?;
 
     let Some(start) = crate::db::resolve_graph_node_ref_read_only(&state.db_path, from)? else {
         return Err(ApiError::not_found("source graph node not found"));
@@ -260,10 +258,7 @@ pub async fn blast_radius(
     State(state): State<AppState>,
     Query(query): Query<BlastRadiusQuery>,
 ) -> Result<Json<crate::models::BlastRadiusRecord>, ApiError> {
-    let username = query.user.trim();
-    if username.is_empty() {
-        return Err(ApiError::bad_request("user parameter is required"));
-    }
+    let username = required_param(&query.user, "user", API_FILTER_PARAM_MAX_BYTES)?;
 
     let entry_points = crate::db::list_user_nodes_by_username_read_only(&state.db_path, username)?;
     if entry_points.is_empty() {
@@ -309,6 +304,34 @@ pub async fn list_ssh_config(
     )?))
 }
 
+pub async fn list_host_aliases(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<crate::models::HostAliasRecord>>, ApiError> {
+    Ok(Json(crate::db::list_host_aliases_read_only(
+        &state.db_path,
+        API_LIMIT,
+    )?))
+}
+
+pub async fn list_data_quality(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<crate::models::DataQualityFindingRecord>>, ApiError> {
+    Ok(Json(crate::db::list_data_quality_findings_read_only(
+        &state.db_path,
+        API_LIMIT,
+    )?))
+}
+
+pub async fn get_remediation(
+    Path(code): Path<String>,
+) -> Result<Json<crate::models::RemediationRecord>, ApiError> {
+    let code = required_param(&code, "code", API_FILTER_PARAM_MAX_BYTES)?;
+    let Some(record) = crate::risk::remediation_for_code(code) else {
+        return Err(ApiError::not_found("remediation not found"));
+    };
+    Ok(Json(record))
+}
+
 pub struct ApiError {
     status: StatusCode,
     message: String,
@@ -328,6 +351,44 @@ impl ApiError {
             message: message.to_string(),
         }
     }
+}
+
+fn optional_param(
+    value: Option<String>,
+    name: &str,
+    max_bytes: usize,
+) -> Result<Option<String>, ApiError> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    if value.len() > max_bytes {
+        return Err(ApiError::bad_request(&format!(
+            "{name} parameter must be at most {max_bytes} bytes"
+        )));
+    }
+
+    Ok(Some(value.to_string()))
+}
+
+fn required_param<'a>(value: &'a str, name: &str, max_bytes: usize) -> Result<&'a str, ApiError> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(ApiError::bad_request(&format!(
+            "{name} parameter is required"
+        )));
+    }
+    if value.len() > max_bytes {
+        return Err(ApiError::bad_request(&format!(
+            "{name} parameter must be at most {max_bytes} bytes"
+        )));
+    }
+
+    Ok(value)
 }
 
 impl From<anyhow::Error> for ApiError {
@@ -364,5 +425,13 @@ mod tests {
     #[test]
     fn constant_time_eq_accepts_matching_values() {
         assert!(constant_time_eq("secret-token", "secret-token"));
+    }
+
+    #[test]
+    fn rejects_oversized_query_params() {
+        let value = "x".repeat(API_FILTER_PARAM_MAX_BYTES + 1);
+        let error = optional_param(Some(value), "q", API_FILTER_PARAM_MAX_BYTES)
+            .expect_err("oversized param");
+        assert_eq!(error.status, StatusCode::BAD_REQUEST);
     }
 }

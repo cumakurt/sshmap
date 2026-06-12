@@ -229,6 +229,8 @@ async fn connect_session(
     host_key_policy: StrictHostKeyPolicy,
     proxy_jump: Option<&str>,
 ) -> Result<NativeSession> {
+    validate_auth_inputs(auth)?;
+
     if let Some(chain) = proxy_jump {
         return connect_through_proxy_jump(
             auth,
@@ -367,6 +369,20 @@ fn client_config(inactivity_timeout: Duration) -> std::sync::Arc<client::Config>
         inactivity_timeout: Some(inactivity_timeout),
         ..Default::default()
     })
+}
+
+fn validate_auth_inputs(auth: &ScanAuth) -> Result<()> {
+    if let Some(identity_file) = &auth.identity_file
+        && !identity_file.exists()
+    {
+        bail!("identity file not found: {}", identity_file.display());
+    }
+
+    if !auth.has_identity_source() {
+        bail!("native transport requires --key, --agent, or scan.key / scan.use_agent in config");
+    }
+
+    Ok(())
 }
 
 async fn authenticate_session(

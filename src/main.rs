@@ -6,9 +6,11 @@ mod cli;
 mod cli_help;
 mod collector;
 mod config;
+mod csv;
 mod db;
 mod discovery;
 mod doctor;
+mod enrich;
 mod error;
 mod exceptions;
 mod export;
@@ -239,6 +241,7 @@ async fn main() -> Result<()> {
                     "SSH client config entries parsed: {}",
                     summary.ssh_client_config_entries
                 );
+                println!("Host aliases parsed: {}", summary.host_aliases);
                 println!("Risks generated: {}", summary.risks);
             }
         }
@@ -431,12 +434,38 @@ async fn main() -> Result<()> {
         }
         Command::Import { command } => {
             use cli::{
-                ImportAuthorizedKeysArgs, ImportCommand, ImportCsvArgs, ImportFileArgs,
-                ImportHostFileArgs,
+                ImportAuthorizedKeysArgs, ImportAutoArgs, ImportBundleArgs, ImportCommand,
+                ImportCsvArgs, ImportFileArgs, ImportHostFileArgs,
             };
             use importer::{ImportKind, ImportRequest};
 
             let request = match command {
+                ImportCommand::Auto(ImportAutoArgs {
+                    file,
+                    host,
+                    user,
+                    db,
+                }) => ImportRequest {
+                    kind: ImportKind::Auto,
+                    file,
+                    db_path: db,
+                    host,
+                    username: user,
+                    mapping: None,
+                },
+                ImportCommand::Bundle(ImportBundleArgs {
+                    dir,
+                    host,
+                    user,
+                    db,
+                }) => ImportRequest {
+                    kind: ImportKind::Bundle,
+                    file: dir,
+                    db_path: db,
+                    host,
+                    username: user,
+                    mapping: None,
+                },
                 ImportCommand::Ansible(ImportFileArgs { file, db }) => ImportRequest {
                     kind: ImportKind::Ansible,
                     file,
@@ -463,6 +492,14 @@ async fn main() -> Result<()> {
                 },
                 ImportCommand::KnownHosts(ImportFileArgs { file, db }) => ImportRequest {
                     kind: ImportKind::KnownHosts,
+                    file,
+                    db_path: db,
+                    host: None,
+                    username: None,
+                    mapping: None,
+                },
+                ImportCommand::HostsFile(ImportFileArgs { file, db }) => ImportRequest {
+                    kind: ImportKind::HostsFile,
                     file,
                     db_path: db,
                     host: None,
@@ -520,6 +557,13 @@ async fn main() -> Result<()> {
             let summary = importer::run_import(request)?;
             println!("Imported records: {}", summary.imported);
         }
+        Command::Enrich { command } => match command {
+            cli::EnrichCommand::Dns(args) => {
+                let db_path = config::resolve_database(&app_config, &args.db);
+                let summary = enrich::enrich_dns(&db_path, args.limit, args.reverse)?;
+                println!("Enriched aliases: {}", summary.imported);
+            }
+        },
         Command::Serve(args) => {
             let serve = config::serve_config(&app_config);
             let db_path = config::resolve_database(&app_config, &args.db);

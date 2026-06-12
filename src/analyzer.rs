@@ -31,6 +31,7 @@ pub fn run_analysis(
                 sudo_rules: 0,
                 known_hosts_entries: 0,
                 ssh_client_config_entries: 0,
+                host_aliases: 0,
                 risks: stats.risks,
             });
         }
@@ -45,6 +46,7 @@ pub fn run_analysis(
             db::replace_normalized_analysis(db_path, &analysis)?;
             db::update_hostnames_from_evidence(db_path)?;
             db::rebuild_graph_edges(db_path)?;
+            db::refresh_data_quality_findings(db_path)?;
             analysis.summary(raw_evidence.len(), db::load_database_stats(db_path)?.risks)
         }
         AnalyzeScope::Risks => {
@@ -64,6 +66,7 @@ pub fn run_analysis(
             db::replace_risks(db_path, &risks)?;
             db::update_hostnames_from_evidence(db_path)?;
             db::rebuild_graph_edges(db_path)?;
+            db::refresh_data_quality_findings(db_path)?;
             summary
         }
     };
@@ -92,6 +95,20 @@ fn build_normalized_analysis(raw_evidence: &[RawEvidenceForAnalysis]) -> Normali
                     &evidence.content,
                     evidence.host_id,
                 ));
+            }
+            "hosts_file" => {
+                for section in split_file_sections(
+                    &evidence.content,
+                    default_source_file(&evidence.source, evidence.evidence_type.as_str()),
+                ) {
+                    analysis
+                        .host_aliases
+                        .extend(parser::hosts_file::parse_hosts_file(
+                            &section.content,
+                            evidence.host_id,
+                            &section.source_file,
+                        ));
+                }
             }
             "sshd_config" => {
                 for section in split_file_sections(
@@ -182,6 +199,7 @@ fn default_source_file(source: &str, evidence_type: &str) -> &'static str {
         ("sudoers", _) => "/etc/sudoers",
         (_, "passwd") => "getent passwd",
         (_, "group") => "getent group",
+        (_, "hosts_file") => "/etc/hosts",
         (_, "sshd_config") => "sshd_config",
         (_, "authorized_keys") => "authorized_keys",
         (_, "sudoers") => "sudoers",
@@ -224,6 +242,21 @@ mod tests {
         let analysis = build_normalized_analysis(&evidence);
 
         assert_eq!(analysis.ssh_client_config_entries.len(), 1);
+    }
+
+    #[test]
+    fn parses_hosts_file_evidence() {
+        let evidence = vec![RawEvidenceForAnalysis {
+            host_id: 1,
+            evidence_type: "hosts_file".to_string(),
+            source: "hosts_file".to_string(),
+            content: "10.0.0.10 web01 web01.internal".to_string(),
+            exit_code: Some(0),
+        }];
+
+        let analysis = build_normalized_analysis(&evidence);
+
+        assert_eq!(analysis.host_aliases.len(), 2);
     }
 
     #[test]

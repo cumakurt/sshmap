@@ -1,5 +1,6 @@
-use crate::target::parse_host_port;
+use crate::target::{is_valid_connection_host, parse_host_port};
 use crate::transport::SshTarget;
+use crate::transport::auth::validate_ssh_username;
 use anyhow::{Result, bail};
 
 pub fn parse_proxy_jump_hop(hop: &str, default_username: &str) -> Result<SshTarget> {
@@ -10,13 +11,20 @@ pub fn parse_proxy_jump_hop(hop: &str, default_username: &str) -> Result<SshTarg
 
     let (username, host_port) = match hop.split_once('@') {
         Some((username, host_port)) if !username.is_empty() && !host_port.is_empty() => {
+            validate_ssh_username(username)?;
             (username.to_string(), host_port)
         }
-        None => (default_username.to_string(), hop),
+        None => {
+            validate_ssh_username(default_username)?;
+            (default_username.to_string(), hop)
+        }
         _ => bail!("invalid proxy jump hop: {hop}"),
     };
 
     let (host, port) = parse_host_port(host_port)?;
+    if !is_valid_connection_host(&host) {
+        bail!("invalid proxy jump host: {host}");
+    }
 
     Ok(SshTarget {
         host,
@@ -82,5 +90,16 @@ mod tests {
         let hop = parse_proxy_jump_hop("2001:db8::1", "audit").unwrap();
         assert_eq!(hop.host, "2001:db8::1");
         assert_eq!(hop.port, 22);
+    }
+
+    #[test]
+    fn rejects_invalid_proxy_jump_usernames() {
+        assert!(parse_proxy_jump_hop("bad@user@bastion.example.com", "audit").is_err());
+        assert!(parse_proxy_jump_hop("bad user@bastion.example.com", "audit").is_err());
+    }
+
+    #[test]
+    fn rejects_empty_proxy_jump_hosts() {
+        assert!(parse_proxy_jump_hop(":22", "audit").is_err());
     }
 }

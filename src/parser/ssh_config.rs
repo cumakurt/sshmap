@@ -41,6 +41,7 @@ pub fn parse_ssh_config(
             remote_forward: None,
             dynamic_forward: None,
             strict_host_key_checking: None,
+            include_file: None,
             source_file: source_file.to_string(),
             line_number,
         };
@@ -58,6 +59,7 @@ pub fn parse_ssh_config(
             "remoteforward" => entry.remote_forward = Some(value),
             "dynamicforward" => entry.dynamic_forward = Some(value),
             "stricthostkeychecking" => entry.strict_host_key_checking = Some(value),
+            "include" => entry.include_file = Some(value),
             _ => continue,
         };
         entries.push(entry);
@@ -92,6 +94,20 @@ mod tests {
             entries
                 .iter()
                 .any(|entry| entry.hostname.as_deref() == Some("db01.internal"))
+        );
+    }
+
+    #[test]
+    fn records_include_directives() {
+        let entries = parse_ssh_config(
+            "Include ~/.ssh/conf.d/*.conf\n",
+            1,
+            "/home/user/.ssh/config",
+        );
+
+        assert_eq!(
+            entries[0].include_file.as_deref(),
+            Some("~/.ssh/conf.d/*.conf")
         );
     }
 }

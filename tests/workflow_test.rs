@@ -296,7 +296,7 @@ fn db_migrate_reports_schema_version() {
         .expect("run db migrate");
     assert_success(&output);
     let text = String::from_utf8(output.stdout).expect("utf8 stdout");
-    assert!(text.contains("Schema version: 8"));
+    assert!(text.contains("Schema version: 9"));
 }
 
 #[test]

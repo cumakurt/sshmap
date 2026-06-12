@@ -4,7 +4,7 @@ pub use policy::{RiskPolicy, load_optional as load_risk_policy};
 
 use crate::models::{
     GeneratedRisk, NormalizedAnalysis, ParsedAuthorizedKey, ParsedSshClientConfigEntry,
-    ParsedSudoRule,
+    ParsedSudoRule, RemediationRecord,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -16,6 +16,102 @@ pub fn validate_risk_severity(severity: &str) -> anyhow::Result<()> {
     } else {
         anyhow::bail!("severity must be one of CRITICAL, HIGH, MEDIUM, or LOW")
     }
+}
+
+pub fn remediation_for_code(risk_code: &str) -> Option<RemediationRecord> {
+    let code = risk_code.trim().to_ascii_uppercase();
+    let record = match code.as_str() {
+        "SSH_ROOT_LOGIN_ENABLED" | "SSH_ROOT_LOGIN_WITH_KEYS" => RemediationRecord {
+            risk_code: code,
+            title: "Disable direct root SSH login".to_string(),
+            verify: vec![
+                "sshd -T | grep -i '^permitrootlogin'".to_string(),
+                "grep -Rni '^PermitRootLogin' /etc/ssh/sshd_config /etc/ssh/sshd_config.d 2>/dev/null".to_string(),
+            ],
+            fix: vec![
+                "Set PermitRootLogin no in sshd_config or an included drop-in.".to_string(),
+                "Reload SSH with systemctl reload sshd or systemctl reload ssh.".to_string(),
+            ],
+            rollback: vec!["Restore the previous PermitRootLogin value and reload SSH.".to_string()],
+            ansible: Some(
+                "- lineinfile:\n    path: /etc/ssh/sshd_config\n    regexp: '^#?PermitRootLogin'\n    line: 'PermitRootLogin no'\n  notify: reload sshd".to_string(),
+            ),
+        },
+        "SSH_PASSWORD_AUTH_ENABLED" => RemediationRecord {
+            risk_code: code,
+            title: "Disable SSH password authentication".to_string(),
+            verify: vec!["sshd -T | grep -i '^passwordauthentication'".to_string()],
+            fix: vec![
+                "Set PasswordAuthentication no after confirming key-based access works.".to_string(),
+                "Reload SSH and test a new session before closing the current one.".to_string(),
+            ],
+            rollback: vec!["Set PasswordAuthentication yes and reload SSH if emergency access is required.".to_string()],
+            ansible: Some(
+                "- lineinfile:\n    path: /etc/ssh/sshd_config\n    regexp: '^#?PasswordAuthentication'\n    line: 'PasswordAuthentication no'\n  notify: reload sshd".to_string(),
+            ),
+        },
+        "SSH_EMPTY_PASSWORD_ALLOWED" => RemediationRecord {
+            risk_code: code,
+            title: "Reject empty-password SSH logins".to_string(),
+            verify: vec!["sshd -T | grep -i '^permitemptypasswords'".to_string()],
+            fix: vec![
+                "Set PermitEmptyPasswords no.".to_string(),
+                "Lock or set passwords for any account with an empty password hash.".to_string(),
+            ],
+            rollback: vec!["Restore the previous PermitEmptyPasswords value only for controlled break-glass recovery.".to_string()],
+            ansible: None,
+        },
+        "SSH_FORWARD_AGENT_ENABLED" | "SSH_FORWARD_AGENT_WILDCARD" => RemediationRecord {
+            risk_code: code,
+            title: "Restrict SSH agent forwarding".to_string(),
+            verify: vec!["sshd -T | grep -i '^allowagentforwarding'".to_string()],
+            fix: vec![
+                "Set AllowAgentForwarding no where forwarding is not required.".to_string(),
+                "Add no-agent-forwarding to broad authorized_keys entries.".to_string(),
+            ],
+            rollback: vec!["Re-enable forwarding for a narrow Match block or specific key if required.".to_string()],
+            ansible: None,
+        },
+        "SSH_TCP_FORWARDING_ENABLED" | "SSH_GATEWAY_PORTS_ENABLED" => RemediationRecord {
+            risk_code: code,
+            title: "Restrict SSH forwarding exposure".to_string(),
+            verify: vec![
+                "sshd -T | grep -Ei '^(allowtcpforwarding|gatewayports)'".to_string(),
+            ],
+            fix: vec![
+                "Disable forwarding globally unless explicitly required.".to_string(),
+                "Use Match blocks for narrow exceptions.".to_string(),
+            ],
+            rollback: vec!["Restore previous forwarding settings for approved workflows.".to_string()],
+            ansible: None,
+        },
+        "SSH_AUTHORIZED_KEY_WITHOUT_RESTRICTIONS"
+        | "SSH_ROOT_AUTHORIZED_KEY_WITHOUT_RESTRICTIONS" => RemediationRecord {
+            risk_code: code,
+            title: "Restrict broad authorized_keys entries".to_string(),
+            verify: vec!["Inspect the reported authorized_keys source file and line number.".to_string()],
+            fix: vec![
+                "Add from=, command=, no-pty, no-port-forwarding, and no-agent-forwarding where appropriate.".to_string(),
+                "Remove stale or unknown keys.".to_string(),
+            ],
+            rollback: vec!["Restore the previous authorized_keys line from backup if access is broken.".to_string()],
+            ansible: None,
+        },
+        "SSH_PUBLIC_KEY_REUSED" | "SSH_PUBLIC_KEY_REUSED_WIDELY" => RemediationRecord {
+            risk_code: code,
+            title: "Rotate reused SSH keys".to_string(),
+            verify: vec!["List all locations for the key fingerprint in SSHMap key detail.".to_string()],
+            fix: vec![
+                "Issue unique keys per user and environment.".to_string(),
+                "Remove the reused public key after rollout.".to_string(),
+            ],
+            rollback: vec!["Temporarily restore the previous key only for hosts that failed rollout validation.".to_string()],
+            ansible: None,
+        },
+        _ => return None,
+    };
+
+    Some(record)
 }
 
 pub fn generate_risks(analysis: &NormalizedAnalysis, policy: &RiskPolicy) -> Vec<GeneratedRisk> {

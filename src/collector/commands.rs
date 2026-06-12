@@ -50,6 +50,12 @@ pub fn default_remote_commands() -> Vec<RemoteCommand> {
             sudo_policy: SudoPolicy::Never,
         },
         RemoteCommand {
+            name: "hosts_file",
+            evidence_type: "hosts_file",
+            command: "cat /etc/hosts 2>/dev/null",
+            sudo_policy: SudoPolicy::Never,
+        },
+        RemoteCommand {
             name: "sshd_config",
             evidence_type: "sshd_config",
             command: "cat /etc/ssh/sshd_config 2>/dev/null",
@@ -150,6 +156,7 @@ mod tests {
 
         assert!(evidence_types.contains(&"known_hosts"));
         assert!(evidence_types.contains(&"ssh_config"));
+        assert!(evidence_types.contains(&"hosts_file"));
     }
 
     #[test]

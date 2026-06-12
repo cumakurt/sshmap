@@ -478,6 +478,14 @@ pub fn format_detailed_database_stats(stats: &DetailedDatabaseStats) -> String {
         stats.ssh_client_config_entries
     )
     .expect("writing to String cannot fail");
+    writeln!(output, "Host aliases: {}", stats.host_aliases)
+        .expect("writing to String cannot fail");
+    writeln!(
+        output,
+        "Data quality findings: {}",
+        stats.data_quality_findings
+    )
+    .expect("writing to String cannot fail");
     writeln!(output, "Risk exceptions: {}", stats.risk_exceptions)
         .expect("writing to String cannot fail");
     writeln!(output, "Baselines: {}", stats.baselines).expect("writing to String cannot fail");

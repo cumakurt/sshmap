@@ -205,22 +205,7 @@ pub fn validate_proxy_jump(value: &str) -> anyhow::Result<()> {
         anyhow::bail!("proxy jump value must be between 1 and 512 characters");
     }
 
-    for hop in value.split(',') {
-        let hop = hop.trim();
-        if hop.is_empty() {
-            anyhow::bail!("proxy jump chain contains an empty hop");
-        }
-        if hop.len() > 253 {
-            anyhow::bail!("proxy jump hop is too long: {hop}");
-        }
-        let valid = hop.chars().all(|character| {
-            character.is_ascii_alphanumeric()
-                || matches!(character, '.' | '-' | '_' | ':' | '@' | '[' | ']' | '%')
-        });
-        if !valid {
-            anyhow::bail!("proxy jump hop contains invalid characters: {hop}");
-        }
-    }
+    crate::transport::proxy_jump::parse_proxy_jump_chain(value, "sshmap")?;
 
     Ok(())
 }
@@ -318,6 +303,8 @@ mod tests {
         validate_proxy_jump("jump1.example.com,jump2.example.com").unwrap();
         assert!(validate_proxy_jump("").is_err());
         assert!(validate_proxy_jump("bad hop").is_err());
+        assert!(validate_proxy_jump(":22").is_err());
+        assert!(validate_proxy_jump("bad user@bastion.example.com").is_err());
     }
 
     #[test]

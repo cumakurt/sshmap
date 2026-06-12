@@ -165,6 +165,63 @@ export interface RiskExceptionRecord {
   created_at: string;
 }
 
+export interface SshClientConfigEntryRecord {
+  id: number;
+  host_id: number;
+  hostname: string | null;
+  ip_address: string | null;
+  host_pattern: string;
+  config_hostname: string | null;
+  ssh_user: string | null;
+  port: number | null;
+  identity_file: string | null;
+  proxy_jump: string | null;
+  proxy_command: string | null;
+  forward_agent: string | null;
+  local_forward: string | null;
+  remote_forward: string | null;
+  dynamic_forward: string | null;
+  strict_host_key_checking: string | null;
+  include_file: string | null;
+  source_file: string | null;
+  line_number: number | null;
+}
+
+export interface HostAliasRecord {
+  id: number;
+  host_id: number;
+  hostname: string | null;
+  host_ip_address: string;
+  ip_address: string;
+  alias: string;
+  alias_kind: string;
+  source: string;
+  source_file: string | null;
+  line_number: number | null;
+  confidence: string;
+}
+
+export interface DataQualityFindingRecord {
+  id: number;
+  host_id: number | null;
+  hostname: string | null;
+  ip_address: string | null;
+  code: string;
+  severity: string;
+  message: string;
+  evidence: string | null;
+  created_at: string;
+}
+
+export interface RemediationRecord {
+  risk_code: string;
+  title: string;
+  verify: string[];
+  fix: string[];
+  rollback: string[];
+  ansible: string | null;
+}
+
 const TOKEN_KEY = "sshmap_token";
 
 export function getToken(): string {

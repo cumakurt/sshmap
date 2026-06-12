@@ -142,6 +142,12 @@ pub enum Command {
         command: ImportCommand,
     },
 
+    /// Enrich inventory with resolver-derived metadata
+    Enrich {
+        #[command(subcommand)]
+        command: EnrichCommand,
+    },
+
     /// Read-only REST API and web dashboard
     #[command(long_about = crate::cli_help::SERVE_LONG)]
     Serve(ServeArgs),
@@ -620,6 +626,10 @@ pub struct BlastRadiusArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum ImportCommand {
+    /// Auto-detect a supported evidence or inventory file
+    Auto(ImportAutoArgs),
+    /// Import all supported evidence files under a directory
+    Bundle(ImportBundleArgs),
     /// Import hosts from an Ansible INI inventory file
     Ansible(ImportFileArgs),
     /// Import SSH hosts from Nmap XML output
@@ -628,6 +638,8 @@ pub enum ImportCommand {
     Csv(ImportCsvArgs),
     /// Import known_hosts trust relationships
     KnownHosts(ImportFileArgs),
+    /// Import host/IP aliases from an /etc/hosts style file
+    HostsFile(ImportFileArgs),
     /// Import SSH client config evidence for a host
     SshConfig(ImportHostFileArgs),
     /// Import sshd_config evidence for a host
@@ -638,6 +650,44 @@ pub enum ImportCommand {
     Sudoers(ImportHostFileArgs),
     /// Import host inventory from a prior SSHMap JSON report
     Json(ImportFileArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct ImportAutoArgs {
+    #[arg(
+        long,
+        value_name = "PATH",
+        help = "Input file to auto-detect and import"
+    )]
+    pub file: PathBuf,
+
+    /// Target host identifier for host-scoped evidence
+    #[arg(long)]
+    pub host: Option<String>,
+
+    /// Unix username for authorized_keys files when it cannot be inferred
+    #[arg(long)]
+    pub user: Option<String>,
+
+    #[arg(long, default_value = "sshmap.db", help = "SQLite database file path")]
+    pub db: PathBuf,
+}
+
+#[derive(Debug, Args)]
+pub struct ImportBundleArgs {
+    #[arg(long, value_name = "DIR", help = "Directory containing evidence files")]
+    pub dir: PathBuf,
+
+    /// Target host identifier for host-scoped evidence
+    #[arg(long)]
+    pub host: Option<String>,
+
+    /// Unix username fallback for authorized_keys files
+    #[arg(long)]
+    pub user: Option<String>,
+
+    #[arg(long, default_value = "sshmap.db", help = "SQLite database file path")]
+    pub db: PathBuf,
 }
 
 #[derive(Debug, Args)]
@@ -685,6 +735,26 @@ pub struct ImportAuthorizedKeysArgs {
 
     #[arg(long, help = "Unix username for the authorized_keys entry")]
     pub user: String,
+
+    #[arg(long, default_value = "sshmap.db", help = "SQLite database file path")]
+    pub db: PathBuf,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum EnrichCommand {
+    /// Resolve hostnames and optional reverse DNS into host aliases
+    Dns(EnrichDnsArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct EnrichDnsArgs {
+    /// Maximum hostnames/IPs to process
+    #[arg(long, default_value_t = 1000)]
+    pub limit: usize,
+
+    /// Also attempt reverse lookup through getent hosts
+    #[arg(long)]
+    pub reverse: bool,
 
     #[arg(long, default_value = "sshmap.db", help = "SQLite database file path")]
     pub db: PathBuf,

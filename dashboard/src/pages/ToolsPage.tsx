@@ -5,6 +5,7 @@ import {
   setToken,
   type BlastRadiusRecord,
   type GraphPathRecord,
+  type RemediationRecord,
   type RiskExceptionRecord,
 } from "../api";
 
@@ -13,6 +14,7 @@ export function ToolsPage() {
   const [pathFrom, setPathFrom] = useState("");
   const [pathTo, setPathTo] = useState("");
   const [blastUser, setBlastUser] = useState("");
+  const [riskCode, setRiskCode] = useState("");
   const [output, setOutput] = useState("Use the controls below to query path and blast radius analysis.");
 
   async function runQuery(label: string, request: Promise<unknown>) {
@@ -105,6 +107,28 @@ export function ToolsPage() {
           }
         >
           Load exceptions
+        </button>
+      </div>
+
+      <div className="tools-section panel">
+        <h2>Remediation</h2>
+        <label htmlFor="risk-code">Risk code</label>
+        <input
+          id="risk-code"
+          value={riskCode}
+          onChange={(event) => setRiskCode(event.target.value)}
+          placeholder="SSH_PASSWORD_AUTH_ENABLED"
+        />
+        <button
+          type="button"
+          onClick={() =>
+            runQuery(
+              "Remediation",
+              api<RemediationRecord>(`/api/remediation/${encodeURIComponent(riskCode)}`),
+            )
+          }
+        >
+          Load
         </button>
       </div>
 

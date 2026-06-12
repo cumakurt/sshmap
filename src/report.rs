@@ -111,9 +111,9 @@ fn render_hosts_csv(report: &ReportData) -> String {
             csv,
             "{},{},{},{},{},{},{},{}",
             host.id,
-            csv_field(host.hostname.as_deref().unwrap_or("")),
-            csv_field(host.fqdn.as_deref().unwrap_or("")),
-            csv_field(&host.ip_address),
+            crate::csv::field(host.hostname.as_deref().unwrap_or("")),
+            crate::csv::field(host.fqdn.as_deref().unwrap_or("")),
+            crate::csv::field(&host.ip_address),
             host.port,
             yes_no(host.ssh_open),
             host.user_count,
@@ -130,7 +130,7 @@ fn render_users_csv(report: &ReportData) -> String {
         writeln!(
             csv,
             "{},{},{},{},{}",
-            csv_field(&user.username),
+            crate::csv::field(&user.username),
             user.host_count,
             user.key_count,
             user.sudo_rule_count,
@@ -150,8 +150,8 @@ fn render_keys_csv(keys: &[crate::models::KeySummaryRecord]) -> String {
             csv,
             "{},{},{},{},{},{},{}",
             key.id,
-            csv_field(&key.key_type),
-            csv_field(&key.fingerprint_sha256),
+            crate::csv::field(&key.key_type),
+            crate::csv::field(&key.fingerprint_sha256),
             key.host_count,
             key.user_count,
             key.root_usage_count,
@@ -171,15 +171,15 @@ fn render_risks_csv(risks: &[RiskRecord]) -> String {
             csv,
             "{},{},{},{},{},{},{},{},{},{}",
             risk.id,
-            csv_field(&risk.severity),
+            crate::csv::field(&risk.severity),
             risk.score,
-            csv_field(&risk.risk_code),
-            csv_field(risk.hostname.as_deref().unwrap_or("")),
-            csv_field(risk.ip_address.as_deref().unwrap_or("")),
-            csv_field(risk.username.as_deref().unwrap_or("")),
-            csv_field(risk.public_key_fingerprint.as_deref().unwrap_or("")),
-            csv_field(&risk.title),
-            csv_field(&risk.status)
+            crate::csv::field(&risk.risk_code),
+            crate::csv::field(risk.hostname.as_deref().unwrap_or("")),
+            crate::csv::field(risk.ip_address.as_deref().unwrap_or("")),
+            crate::csv::field(risk.username.as_deref().unwrap_or("")),
+            crate::csv::field(risk.public_key_fingerprint.as_deref().unwrap_or("")),
+            crate::csv::field(&risk.title),
+            crate::csv::field(&risk.status)
         )
         .expect("writing to String cannot fail");
     }
@@ -195,14 +195,14 @@ fn render_graph_edges_csv(edges: &[crate::models::GraphEdgeRecord]) -> String {
             csv,
             "{},{},{},{},{},{},{},{},{}",
             edge.id,
-            csv_field(&edge.from_type),
-            csv_field(&edge.from_label),
-            csv_field(&edge.to_type),
-            csv_field(&edge.to_label),
-            csv_field(&edge.edge_type),
+            crate::csv::field(&edge.from_type),
+            crate::csv::field(&edge.from_label),
+            crate::csv::field(&edge.to_type),
+            crate::csv::field(&edge.to_label),
+            crate::csv::field(&edge.edge_type),
             edge.weight,
-            csv_field(&edge.confidence),
-            csv_field(edge.evidence.as_deref().unwrap_or(""))
+            crate::csv::field(&edge.confidence),
+            crate::csv::field(edge.evidence.as_deref().unwrap_or(""))
         )
         .expect("writing to String cannot fail");
     }
@@ -219,16 +219,16 @@ fn render_known_hosts_csv(entries: &[crate::models::KnownHostEntryRecord]) -> St
             "{},{},{},{},{},{},{},{},{},{},{},{}",
             entry.id,
             entry.host_id,
-            csv_field(entry.hostname.as_deref().unwrap_or("")),
-            csv_field(entry.ip_address.as_deref().unwrap_or("")),
-            csv_field(entry.known_host.as_deref().unwrap_or("")),
-            csv_field(entry.known_ip.as_deref().unwrap_or("")),
-            csv_field(&entry.host_key_type),
-            csv_field(entry.host_key_fingerprint.as_deref().unwrap_or("")),
+            crate::csv::field(entry.hostname.as_deref().unwrap_or("")),
+            crate::csv::field(entry.ip_address.as_deref().unwrap_or("")),
+            crate::csv::field(entry.known_host.as_deref().unwrap_or("")),
+            crate::csv::field(entry.known_ip.as_deref().unwrap_or("")),
+            crate::csv::field(&entry.host_key_type),
+            crate::csv::field(entry.host_key_fingerprint.as_deref().unwrap_or("")),
             yes_no(entry.hashed),
-            csv_field(entry.source_file.as_deref().unwrap_or("")),
+            crate::csv::field(entry.source_file.as_deref().unwrap_or("")),
             entry.line_number.unwrap_or(0),
-            csv_field(&entry.confidence)
+            crate::csv::field(&entry.confidence)
         )
         .expect("writing to String cannot fail");
     }
@@ -237,42 +237,35 @@ fn render_known_hosts_csv(entries: &[crate::models::KnownHostEntryRecord]) -> St
 
 fn render_ssh_client_config_csv(entries: &[crate::models::SshClientConfigEntryRecord]) -> String {
     let mut csv = String::from(
-        "id,host_id,hostname,ip_address,host_pattern,config_hostname,ssh_user,port,identity_file,proxy_jump,proxy_command,forward_agent,local_forward,remote_forward,dynamic_forward,strict_host_key_checking,source_file,line_number\n",
+        "id,host_id,hostname,ip_address,host_pattern,config_hostname,ssh_user,port,identity_file,proxy_jump,proxy_command,forward_agent,local_forward,remote_forward,dynamic_forward,strict_host_key_checking,include_file,source_file,line_number\n",
     );
     for entry in entries {
         writeln!(
             csv,
-            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
             entry.id,
             entry.host_id,
-            csv_field(entry.hostname.as_deref().unwrap_or("")),
-            csv_field(entry.ip_address.as_deref().unwrap_or("")),
-            csv_field(&entry.host_pattern),
-            csv_field(entry.config_hostname.as_deref().unwrap_or("")),
-            csv_field(entry.ssh_user.as_deref().unwrap_or("")),
+            crate::csv::field(entry.hostname.as_deref().unwrap_or("")),
+            crate::csv::field(entry.ip_address.as_deref().unwrap_or("")),
+            crate::csv::field(&entry.host_pattern),
+            crate::csv::field(entry.config_hostname.as_deref().unwrap_or("")),
+            crate::csv::field(entry.ssh_user.as_deref().unwrap_or("")),
             entry.port.unwrap_or(0),
-            csv_field(entry.identity_file.as_deref().unwrap_or("")),
-            csv_field(entry.proxy_jump.as_deref().unwrap_or("")),
-            csv_field(entry.proxy_command.as_deref().unwrap_or("")),
-            csv_field(entry.forward_agent.as_deref().unwrap_or("")),
-            csv_field(entry.local_forward.as_deref().unwrap_or("")),
-            csv_field(entry.remote_forward.as_deref().unwrap_or("")),
-            csv_field(entry.dynamic_forward.as_deref().unwrap_or("")),
-            csv_field(entry.strict_host_key_checking.as_deref().unwrap_or("")),
-            csv_field(entry.source_file.as_deref().unwrap_or("")),
+            crate::csv::field(entry.identity_file.as_deref().unwrap_or("")),
+            crate::csv::field(entry.proxy_jump.as_deref().unwrap_or("")),
+            crate::csv::field(entry.proxy_command.as_deref().unwrap_or("")),
+            crate::csv::field(entry.forward_agent.as_deref().unwrap_or("")),
+            crate::csv::field(entry.local_forward.as_deref().unwrap_or("")),
+            crate::csv::field(entry.remote_forward.as_deref().unwrap_or("")),
+            crate::csv::field(entry.dynamic_forward.as_deref().unwrap_or("")),
+            crate::csv::field(entry.strict_host_key_checking.as_deref().unwrap_or("")),
+            crate::csv::field(entry.include_file.as_deref().unwrap_or("")),
+            crate::csv::field(entry.source_file.as_deref().unwrap_or("")),
             entry.line_number.unwrap_or(0)
         )
         .expect("writing to String cannot fail");
     }
     csv
-}
-
-fn csv_field(value: &str) -> String {
-    if value.contains(',') || value.contains('"') || value.contains('\n') {
-        format!("\"{}\"", value.replace('"', "\"\""))
-    } else {
-        value.to_string()
-    }
 }
 
 fn count_risks_by_severity(risks: &[RiskRecord]) -> BTreeMap<String, usize> {

@@ -1,8 +1,8 @@
 use crate::collector::commands::default_remote_commands;
 use crate::db;
-use crate::error::SshMapError;
 use crate::models::{HostScanResult, RemoteScanSummary};
 use crate::scope::TargetEndpoint;
+use crate::transport::auth::validate_ssh_username;
 use crate::transport::{ScanAuth, ScanTransport, SshTarget, TransportKind};
 use anyhow::Result;
 use futures::stream::{self, StreamExt};
@@ -102,20 +102,6 @@ async fn scan_single_host(
         host: target.host,
         port: target.port,
         evidence,
-    }
-}
-
-fn validate_ssh_username(username: &str) -> Result<()> {
-    let is_valid = !username.is_empty()
-        && username.len() <= 64
-        && username.chars().all(|character| {
-            character.is_ascii_alphanumeric() || matches!(character, '_' | '-' | '.')
-        });
-
-    if is_valid {
-        Ok(())
-    } else {
-        Err(SshMapError::InvalidUsername(username.to_string()).into())
     }
 }
 

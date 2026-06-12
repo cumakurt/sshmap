@@ -91,14 +91,24 @@ pub fn is_ip_address(value: &str) -> bool {
     value.parse::<std::net::IpAddr>().is_ok()
 }
 
+pub fn is_valid_connection_host(value: &str) -> bool {
+    value.parse::<std::net::IpAddr>().is_ok() || is_valid_hostname_like_value(value)
+}
+
 fn is_valid_hostname_like_value(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 253
-        && value
-            .chars()
-            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '.'))
         && !value.starts_with('.')
         && !value.ends_with('.')
+        && value.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label
+                    .chars()
+                    .all(|character| character.is_ascii_alphanumeric() || character == '-')
+        })
 }
 
 #[cfg(test)]
@@ -137,5 +147,11 @@ mod tests {
             normalize_scope_target("[2001:db8::1]").unwrap(),
             "2001:db8::1"
         );
+    }
+
+    #[test]
+    fn rejects_hostname_labels_with_edge_hyphens() {
+        assert!(!is_valid_connection_host("-bad.example"));
+        assert!(!is_valid_connection_host("bad-.example"));
     }
 }

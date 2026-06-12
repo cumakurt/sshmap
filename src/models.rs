@@ -20,6 +20,8 @@ pub struct DetailedDatabaseStats {
     pub graph_edges: usize,
     pub known_hosts_entries: usize,
     pub ssh_client_config_entries: usize,
+    pub host_aliases: usize,
+    pub data_quality_findings: usize,
     pub risk_exceptions: usize,
     pub baselines: usize,
     pub last_analysis_finished_at: Option<String>,
@@ -101,6 +103,7 @@ pub struct AnalysisSummary {
     pub sudo_rules: usize,
     pub known_hosts_entries: usize,
     pub ssh_client_config_entries: usize,
+    pub host_aliases: usize,
     pub risks: usize,
 }
 
@@ -113,6 +116,7 @@ pub struct NormalizedAnalysis {
     pub sudo_rules: Vec<ParsedSudoRule>,
     pub known_hosts_entries: Vec<ParsedKnownHostEntry>,
     pub ssh_client_config_entries: Vec<ParsedSshClientConfigEntry>,
+    pub host_aliases: Vec<ParsedHostAlias>,
 }
 
 impl NormalizedAnalysis {
@@ -135,9 +139,22 @@ impl NormalizedAnalysis {
             sudo_rules: self.sudo_rules.len(),
             known_hosts_entries: self.known_hosts_entries.len(),
             ssh_client_config_entries: self.ssh_client_config_entries.len(),
+            host_aliases: self.host_aliases.len(),
             risks,
         }
     }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct ParsedHostAlias {
+    pub host_id: i64,
+    pub ip_address: String,
+    pub alias: String,
+    pub alias_kind: String,
+    pub source: String,
+    pub source_file: String,
+    pub line_number: i64,
+    pub confidence: String,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -168,6 +185,7 @@ pub struct ParsedSshClientConfigEntry {
     pub remote_forward: Option<String>,
     pub dynamic_forward: Option<String>,
     pub strict_host_key_checking: Option<String>,
+    pub include_file: Option<String>,
     pub source_file: String,
     pub line_number: i64,
 }
@@ -206,8 +224,37 @@ pub struct SshClientConfigEntryRecord {
     pub remote_forward: Option<String>,
     pub dynamic_forward: Option<String>,
     pub strict_host_key_checking: Option<String>,
+    pub include_file: Option<String>,
     pub source_file: Option<String>,
     pub line_number: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HostAliasRecord {
+    pub id: i64,
+    pub host_id: i64,
+    pub hostname: Option<String>,
+    pub host_ip_address: String,
+    pub ip_address: String,
+    pub alias: String,
+    pub alias_kind: String,
+    pub source: String,
+    pub source_file: Option<String>,
+    pub line_number: Option<i64>,
+    pub confidence: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DataQualityFindingRecord {
+    pub id: i64,
+    pub host_id: Option<i64>,
+    pub hostname: Option<String>,
+    pub ip_address: Option<String>,
+    pub code: String,
+    pub severity: String,
+    pub message: String,
+    pub evidence: Option<String>,
+    pub created_at: String,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -314,6 +361,16 @@ pub struct RiskRecord {
     pub status: String,
     pub first_seen: String,
     pub last_seen: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RemediationRecord {
+    pub risk_code: String,
+    pub title: String,
+    pub verify: Vec<String>,
+    pub fix: Vec<String>,
+    pub rollback: Vec<String>,
+    pub ansible: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]

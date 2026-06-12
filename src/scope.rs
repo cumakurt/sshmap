@@ -125,21 +125,11 @@ fn expand_target(target: &str) -> Result<Vec<String>> {
         return Ok(vec![normalized]);
     }
 
-    if is_valid_hostname_like_value(&normalized) {
+    if crate::target::is_valid_connection_host(&normalized) {
         return Ok(vec![normalized]);
     }
 
     Err(SshMapError::InvalidTarget(target.to_string()).into())
-}
-
-fn is_valid_hostname_like_value(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= 253
-        && value
-            .chars()
-            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '.'))
-        && !value.starts_with('.')
-        && !value.ends_with('.')
 }
 
 #[cfg(test)]

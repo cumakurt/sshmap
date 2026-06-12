@@ -36,7 +36,9 @@ pub async fn run_server(config: ServerConfig) -> Result<()> {
         validate_dashboard_dir(dashboard_dir)?;
     }
 
-    if config.token.is_none() {
+    let token = normalize_api_token(config.token)?;
+
+    if token.is_none() {
         if !config.listen.ip().is_loopback() {
             bail!(
                 "--token is required when listening on a non-loopback address ({})",
@@ -50,7 +52,7 @@ pub async fn run_server(config: ServerConfig) -> Result<()> {
 
     let state = AppState {
         db_path: config.db_path.clone(),
-        token: config.token.clone(),
+        token: token.clone(),
     };
 
     let app = build_app(state, config.dashboard_dir.clone());
@@ -69,7 +71,7 @@ pub async fn run_server(config: ServerConfig) -> Result<()> {
     } else {
         println!("Dashboard: embedded HTML");
     }
-    if config.token.is_some() {
+    if token.is_some() {
         println!("API token authentication: enabled");
     }
 
@@ -78,6 +80,22 @@ pub async fn run_server(config: ServerConfig) -> Result<()> {
         .context("sshmap server terminated with error")?;
 
     Ok(())
+}
+
+fn normalize_api_token(token: Option<String>) -> Result<Option<String>> {
+    let Some(token) = token else {
+        return Ok(None);
+    };
+
+    let token = token.trim().to_string();
+    if token.is_empty() {
+        bail!("API token cannot be empty or whitespace");
+    }
+    if token.chars().any(char::is_control) {
+        bail!("API token cannot contain control characters");
+    }
+
+    Ok(Some(token))
 }
 
 pub fn build_app(state: AppState, dashboard_dir: Option<PathBuf>) -> Router {
@@ -99,6 +117,9 @@ pub fn build_app(state: AppState, dashboard_dir: Option<PathBuf>) -> Router {
         .route("/api/exceptions", get(api::list_exceptions))
         .route("/api/known-hosts", get(api::list_known_hosts))
         .route("/api/ssh-config", get(api::list_ssh_config))
+        .route("/api/host-aliases", get(api::list_host_aliases))
+        .route("/api/data-quality", get(api::list_data_quality))
+        .route("/api/remediation/{code}", get(api::get_remediation))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             api::auth_middleware,
@@ -196,6 +217,12 @@ mod tests {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let error = validate_dashboard_dir(temp_dir.path()).expect_err("missing index");
         assert!(error.to_string().contains("index.html"));
+    }
+
+    #[test]
+    fn rejects_empty_api_token() {
+        let error = normalize_api_token(Some("  ".to_string())).expect_err("empty token");
+        assert!(error.to_string().contains("cannot be empty"));
     }
 
     #[tokio::test]

@@ -9,6 +9,7 @@ sshmap import ansible --file inventory.ini --db sshmap.db
 sshmap import nmap --file scan.xml --db sshmap.db
 sshmap import csv --file hosts.csv --db sshmap.db
 sshmap import known-hosts --file ~/.ssh/known_hosts --db sshmap.db
+sshmap import hosts-file --file /etc/hosts --db sshmap.db
 sshmap import json --file sshmap-report.json --db sshmap.db
 ```
 
@@ -30,6 +31,33 @@ sshmap import sudoers --file sudoers --host web01 --db sshmap.db
 | `authorized-keys` | `--host`, `--user` | User authorized keys |
 | `sudoers` | `--host` | Sudo policy file |
 
+## Auto-Detection and Bundles
+
+Use `auto` when a file may be any supported inventory or evidence format:
+
+```bash
+sshmap import auto --file evidence/sshd_config --host web01 --db sshmap.db
+sshmap import auto --file evidence/hosts --db sshmap.db
+```
+
+Use `bundle` for mixed evidence drops:
+
+```bash
+sshmap import bundle --dir evidence-drop --host web01 --user deploy --db sshmap.db
+```
+
+Host-scoped files still need `--host`. `authorized_keys` needs `--user` when the username cannot be inferred.
+
+## Host Aliases
+
+`hosts-file` parses `/etc/hosts` style files into host/IP aliases and inventory hints:
+
+```bash
+sshmap import hosts-file --file /etc/hosts --db sshmap.db
+```
+
+Loopback and special-use aliases are retained with low confidence but are not used to create inventory rows automatically.
+
 ## CSV Mapping
 
 Optional mapping files translate column names for CSV import:
@@ -46,6 +74,7 @@ Import paths run content through the same redaction pipeline used by live collec
 
 ```bash
 sshmap init --db offline.db
+sshmap import hosts-file --file evidence/hosts --db offline.db
 sshmap import sshd-config --file evidence/sshd_config --host app01 --db offline.db
 sshmap import authorized-keys --file evidence/authorized_keys --host app01 --user deploy --db offline.db
 sshmap analyze --db offline.db

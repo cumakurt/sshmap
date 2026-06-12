@@ -68,7 +68,8 @@ Every push and pull request runs `npm ci && npm run build` in `dashboard/` along
 | `/risks` | Risk findings list |
 | `/risks/:id` | Risk detail with evidence and remediation |
 | `/graph` | Access graph canvas and edge table |
-| `/tools` | API token, path analysis, blast radius, exceptions |
+| `/data-quality` | Host aliases and inventory consistency findings |
+| `/tools` | API token, path analysis, blast radius, exceptions, remediation lookup |
 
 ## Authentication
 

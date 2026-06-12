@@ -47,7 +47,8 @@ pub const SCAN_LONG: &str = "\
 Collect read-only SSH security evidence from live hosts.
 
 Connects with an audit SSH key or agent and runs fixed read-only commands
-(passwd, authorized_keys, sshd_config, sudoers, known_hosts, ssh_config, etc.).
+(passwd, authorized_keys, sshd_config, sudoers, known_hosts, ssh_config,
+/etc/hosts, etc.).
 Evidence is stored as raw text for later analysis. Private key contents are
 never collected.";
 
@@ -60,9 +61,9 @@ executed. Use --sudo when passwordless sudo is required for protected paths.";
 pub const ANALYZE_LONG: &str = "\
 Parse raw evidence, generate risks, and rebuild the access graph.
 
-Normalizes users, keys, sudo rules, and SSH configuration, applies the risk
-engine and stored exceptions, and updates graph edges. Run after every
-discovery, scan, or import batch.";
+Normalizes users, keys, sudo rules, SSH configuration, and host aliases,
+applies the risk engine and stored exceptions, refreshes data quality findings,
+and updates graph edges. Run after every discovery, scan, or import batch.";
 
 pub const RISKS_LONG: &str = "\
 Browse generated SSH exposure findings.
@@ -74,7 +75,7 @@ pub const HOST_LONG: &str = "\
 Browse discovered and scanned hosts.
 
 Shows SSH state, source, user counts, and linked risk counts. Host show
-includes local user accounts and host-scoped risks.";
+includes aliases, local user accounts, and host-scoped risks.";
 
 pub const USER_LONG: &str = "\
 Browse normalized SSH user identities across hosts.
@@ -127,14 +128,16 @@ and reports reachable hosts, keys, and passwordless sudo targets.";
 pub const IMPORT_LONG: &str = "\
 Load inventory or evidence files without live SSH access.
 
-Supported sources: Ansible inventory, Nmap XML, CSV, known_hosts, sshd_config,
+Supported sources: auto-detected evidence files, evidence bundles, Ansible
+inventory, Nmap XML, CSV, known_hosts, /etc/hosts style files, sshd_config,
 ssh_config, authorized_keys, sudoers, and prior SSHMap JSON reports.
 Run analyze after importing evidence.";
 
 pub const SERVE_LONG: &str = "\
 Expose the inventory through a read-only HTTP API and dashboard.
 
-Opens the database in SQLite read-only mode. API routes live under /api/*.
+Opens the database in SQLite read-only mode. API routes live under /api/*,
+including host aliases, data quality findings, and remediation guidance.
 Use --token on non-loopback listeners. Pass --dashboard to serve the React
 build from dashboard/dist.";
 

@@ -1,5 +1,9 @@
 # SSHMap
 
+<p align="center">
+  <img src="sshmap.png" alt="SSHMap logo" width="180">
+</p>
+
 SSHMap is an agentless SSH exposure management CLI. It discovers SSH services, collects read-only configuration evidence, analyzes security risks, builds a directed access graph, and exposes inventory through a command-line interface, REST API, and React dashboard.
 
 **Current release:** `1.0.1`  
@@ -40,7 +44,7 @@ Run `sshmap` or `sshmap --help` for the full command reference. Use `sshmap <com
 SSHMap answers four practical questions for infrastructure and security teams:
 
 1. **Where is SSH exposed?** — TCP discovery finds open SSH ports and banners without authentication.
-2. **What SSH-related configuration exists?** — Authenticated scans and imports collect `sshd_config`, `authorized_keys`, sudoers, `known_hosts`, and client `ssh_config` evidence.
+2. **What SSH-related configuration exists?** — Authenticated scans and imports collect `sshd_config`, `authorized_keys`, sudoers, `known_hosts`, `/etc/hosts`, and client `ssh_config` evidence.
 3. **What is risky?** — A built-in risk engine flags weak daemon settings, unrestricted keys, key reuse, dangerous sudo rules, and combined escalation paths.
 4. **How can access spread?** — A directed graph models users, keys, hosts, and sudo relationships for path and blast-radius analysis.
 
@@ -58,7 +62,7 @@ Each section below explains **what a feature does**, **when to use it**, and **w
 |---------|---------|
 | `sshmap init` | Creates a new SQLite database with the current schema. Use this at the start of every engagement or customer project. |
 | `sshmap db migrate` | Applies pending schema migrations to an existing database. Safe to run after upgrades. |
-| `sshmap db stats` | Prints row counts for hosts, users, keys, risks, raw evidence, graph edges, baselines, and exceptions. Use to verify that collection and analysis completed. |
+| `sshmap db stats` | Prints row counts for hosts, users, keys, risks, raw evidence, graph edges, aliases, data quality findings, baselines, and exceptions. Use to verify that collection and analysis completed. |
 
 The database is the single source of truth. Discovery, scans, imports, and analysis all write into it; reports, graph tools, and the API read from it.
 
@@ -98,7 +102,7 @@ sshmap discover --targets 10.10.0.0/24 --ports 22,2222 --concurrency 100 --db ss
 
 **Purpose:** Collect read-only SSH security evidence from live hosts using an audit SSH key or agent.
 
-After connecting, SSHMap runs a fixed set of remote commands (passwd, groups, authorized_keys, sshd_config, sudoers, known_hosts, ssh client config, hostname, etc.). Evidence is stored as raw text in `raw_evidence` and linked to host rows.
+After connecting, SSHMap runs a fixed set of remote commands (passwd, groups, authorized_keys, sshd_config, sudoers, known_hosts, ssh client config, `/etc/hosts`, hostname, etc.). Evidence is stored as raw text in `raw_evidence` and linked to host rows.
 
 | Option | What it does |
 |--------|----------------|
@@ -121,7 +125,7 @@ Private key file **contents** are never stored. Sensitive patterns in collected 
 
 **Purpose:** Audit the machine where SSHMap runs **without SSH**.
 
-Local scan executes the same read-only collection commands locally. Useful for bastions, CI runners, or air-gapped analysis workstations.
+Local scan executes the same read-only collection commands locally, including `/etc/hosts` alias collection. Useful for bastions, CI runners, or air-gapped analysis workstations.
 
 Use `--sudo` when passwordless sudo is required to read `/etc/ssh`, `/etc/sudoers`, and user home directories.
 
@@ -137,13 +141,18 @@ Use `--sudo` when passwordless sudo is required to read `/etc/ssh`, `/etc/sudoer
 | `nmap` | Nmap XML | Discovered SSH hosts |
 | `csv` | Custom CSV mapping | Host inventory |
 | `known-hosts` | `known_hosts` file | Client trust relationships |
+| `hosts-file` | `/etc/hosts` style file | Host/IP aliases and inventory hints |
 | `sshd-config` | `sshd_config` snippet | Daemon configuration evidence |
 | `ssh-config` | SSH client config | Client jump/forward settings |
 | `authorized-keys` | `authorized_keys` file | Key-to-user bindings (requires `--user`) |
 | `sudoers` | sudoers fragment | Privilege escalation rules |
 | `json` | Prior SSHMap JSON report | Host inventory from export |
+| `auto` | Any supported evidence or inventory file | Parser is selected from filename and content |
+| `bundle` | Directory of evidence files | Imports every auto-detected supported file |
 
 Imports create or update host rows and insert raw evidence. IPv6 targets are supported in bracketed form, e.g. `--host [2001:db8::1]:2222`.
+
+`auto` and `bundle` are useful when evidence comes from mixed file drops. Host-scoped evidence such as `sshd_config`, `ssh_config`, `authorized_keys`, or sudoers still needs `--host`; `authorized_keys` also needs `--user` when it cannot be inferred.
 
 **When to use:** Offline forensics, vendor file drops, or combining scanner output with later analysis.
 
@@ -153,12 +162,13 @@ Imports create or update host rows and insert raw evidence. IPv6 targets are sup
 
 The analyzer:
 
-1. Parses passwd, groups, authorized_keys, sshd_config, sudoers, known_hosts, and ssh_config
+1. Parses passwd, groups, authorized_keys, sshd_config, sudoers, known_hosts, `/etc/hosts`, and ssh_config
 2. Normalizes users, keys, sudo rules, and client config entries
 3. Runs the risk engine (with optional YAML policy overrides)
 4. Applies stored risk exceptions
 5. Rebuilds graph edges between hosts, users, keys, and sudo rules
-6. Records analysis timestamp for incremental mode
+6. Refreshes host aliases and data quality findings
+7. Records analysis timestamp for incremental mode
 
 | Flag | What it does |
 |------|----------------|
@@ -169,7 +179,20 @@ The analyzer:
 
 **When to use:** After every discovery, scan, or import batch.
 
-**Output:** Populated `users`, `public_keys`, `authorized_keys`, `risks`, `graph_edges`, and related tables.
+**Output:** Populated `users`, `public_keys`, `authorized_keys`, `risks`, `graph_edges`, `host_aliases`, `data_quality_findings`, and related tables.
+
+### Enrichment and Data Quality (`enrich`)
+
+**Purpose:** Improve host identity resolution and surface inventory consistency problems.
+
+| Command | Purpose |
+|---------|---------|
+| `sshmap enrich dns` | Resolve known hostnames and aliases into IP aliases |
+| `sshmap enrich dns --reverse` | Also attempt reverse DNS through `getent hosts` |
+
+Host aliases come from `/etc/hosts`, DNS enrichment, and parsed evidence. Low-confidence loopback or special-use aliases are retained as evidence but are not used to create inventory rows automatically.
+
+Data quality findings flag issues that can make analysis ambiguous, such as unnamed hosts, SSH-open hosts without users, or conflicting aliases that point to multiple addresses. These findings are exposed in the dashboard Quality view and the REST API.
 
 ### Risk Engine (`risks`, `exceptions`)
 
@@ -200,7 +223,7 @@ Exceptions are applied during analysis, not at display time, so suppressed risks
 
 | Command | What you get |
 |---------|----------------|
-| `host list` / `host show` | Hosts with SSH state, user counts, linked risks |
+| `host list` / `host show` | Hosts with SSH state, user counts, aliases, linked risks |
 | `user list` / `user show` | Cross-host user presence, authorized keys, sudo rules, risks |
 | `keys list` | All public keys with usage counts |
 | `keys reuse` | Keys appearing on multiple hosts or users |
@@ -375,9 +398,20 @@ sshmap scan --targets 10.10.0.0/24 --user audituser --key ~/.ssh/audit_ed25519 -
 
 ```bash
 sshmap import ansible --file inventory.ini --db sshmap.db
+sshmap import hosts-file --file /etc/hosts --db sshmap.db
+sshmap import auto --file evidence/sshd_config --host web01 --db sshmap.db
+sshmap import bundle --dir evidence-drop --host web01 --user deploy --db sshmap.db
 sshmap import sshd-config --file sshd_config --host web01 --db sshmap.db
 sshmap import authorized-keys --file authorized_keys --host web01 --user deploy --db sshmap.db
 sshmap analyze --db sshmap.db
+```
+
+### Enrichment and Data Quality
+
+```bash
+sshmap enrich dns --db sshmap.db
+sshmap enrich dns --reverse --limit 500 --db sshmap.db
+sshmap db stats --db sshmap.db
 ```
 
 ### Analysis and Risks
@@ -416,7 +450,7 @@ Embedded dashboard:
 sshmap serve --db sshmap.db --listen 127.0.0.1:8080 --read-only
 ```
 
-React dashboard (detail pages, filters, graph canvas):
+React dashboard (detail pages, filters, Quality view, graph canvas):
 
 ```bash
 cd dashboard && npm ci && npm run build
@@ -451,6 +485,9 @@ GET /api/baselines
 GET /api/exceptions
 GET /api/known-hosts
 GET /api/ssh-config
+GET /api/host-aliases
+GET /api/data-quality
+GET /api/remediation/{code}
 ```
 
 See `docs/api.md` and `docs/dashboard.md` for full reference.
@@ -468,6 +505,7 @@ sshmap scan --file examples/hosts.txt --user audituser --key ~/.ssh/audit_ed2551
   --sudo --timeout 10 --concurrency 20 --db customer.db
 
 sshmap analyze --db customer.db
+sshmap enrich dns --reverse --db customer.db
 
 sshmap risks list --severity critical --db customer.db
 sshmap keys reuse --db customer.db

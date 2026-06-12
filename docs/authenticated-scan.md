@@ -79,6 +79,7 @@ Typical evidence types:
 - `authorized_keys` for discovered users
 - `sudoers` rules when accessible
 - `known_hosts` and user `ssh_config` files when accessible
+- `/etc/hosts` aliases
 - Public key fingerprints and file permissions
 
 ## Safety Model

@@ -45,8 +45,11 @@ sshmap analyze --db local.db
 
 ```bash
 sshmap import ansible --file inventory.ini --db sshmap.db
+sshmap import hosts-file --file /etc/hosts --db sshmap.db
+sshmap import auto --file evidence/sshd_config --host web01 --db sshmap.db
 sshmap import authorized-keys --file authorized_keys --host web01 --user deploy --db sshmap.db
 sshmap analyze --db sshmap.db
+sshmap enrich dns --reverse --db sshmap.db
 ```
 
 ## Read-Only Web UI

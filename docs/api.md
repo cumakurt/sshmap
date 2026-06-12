@@ -123,6 +123,11 @@ Graph node references use the same `type:id` or label forms accepted by `sshmap 
 | GET | `/api/exceptions` | Active risk exceptions |
 | GET | `/api/known-hosts` | Collected known-hosts entries |
 | GET | `/api/ssh-config` | Collected SSH client config entries |
+| GET | `/api/host-aliases` | Host/IP aliases from `/etc/hosts`, DNS enrichment, and parsed evidence |
+| GET | `/api/data-quality` | Inventory consistency findings |
+| GET | `/api/remediation/{code}` | Remediation, verification, rollback, and Ansible guidance for a risk code |
+
+`/api/known-hosts`, `/api/ssh-config`, `/api/host-aliases`, and `/api/data-quality` accept `limit` with a maximum of `10000`.
 
 ## React dashboard
 

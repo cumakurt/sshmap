@@ -153,7 +153,7 @@ Graph node references use `type:value` syntax (`host:`, `user:`, `key:`, `sudo_r
 
 ## Optional write API
 
-Write endpoints are disabled unless the server is started with `--allow-write-api`. This mode always requires `--token`.
+Write endpoints are disabled unless the server is started with `--allow-write-api`. This mode requires a write-capable credential: either `--token` or `--write-token`.
 
 | Method | Path | Description |
 |--------|------|-------------|

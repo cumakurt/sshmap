@@ -216,7 +216,7 @@ fn is_read_only_command(command: &str) -> Result<(), &'static str> {
     {
         return Err("shell output redirection is not allowed");
     }
-    if trimmed.contains("$(`") || trimmed.contains("${") {
+    if trimmed.contains("$(") || trimmed.contains('`') || trimmed.contains("${") {
         return Err("command substitution is not allowed");
     }
     let lower = format!(" {trimmed} ").to_ascii_lowercase();
@@ -265,6 +265,18 @@ mod tests {
     #[test]
     fn remote_command_manifest_is_read_only() {
         validate_read_only_command_manifest().expect("read-only manifest");
+    }
+
+    #[test]
+    fn rejects_shell_substitution_in_manifest_commands() {
+        assert_eq!(
+            is_read_only_command("cat $(whoami)").expect_err("command substitution"),
+            "command substitution is not allowed"
+        );
+        assert_eq!(
+            is_read_only_command("cat `whoami`").expect_err("backtick substitution"),
+            "command substitution is not allowed"
+        );
     }
 
     #[test]

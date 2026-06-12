@@ -51,6 +51,8 @@ pub struct ServeConfig {
     pub read_only: Option<bool>,
     pub allow_write_api: Option<bool>,
     pub token: Option<String>,
+    pub read_token: Option<String>,
+    pub write_token: Option<String>,
     pub dashboard: Option<PathBuf>,
 }
 

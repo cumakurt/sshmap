@@ -25,6 +25,65 @@ pub enum AnalyzeOnlyScope {
     disable_help_subcommand = false
 )]
 pub struct Cli {
+    /// Run the complete quick workflow (discover, OpenSSH scan, analyze, and export reports)
+    #[arg(short = 'a', long = "all")]
+    pub all: bool,
+
+    /// Quick workflow target list: IPs, CIDRs, or hostnames
+    #[arg(
+        short = 't',
+        long = "target",
+        visible_alias = "targets",
+        value_name = "TARGETS",
+        conflicts_with = "all_file"
+    )]
+    pub all_targets: Option<String>,
+
+    /// Quick workflow target file (one target per line or /etc/hosts-style entries)
+    #[arg(
+        short = 'f',
+        long = "file",
+        value_name = "PATH",
+        conflicts_with = "all_targets"
+    )]
+    pub all_file: Option<PathBuf>,
+
+    /// Quick workflow SSH username (defaults to scan.user or the current OS user)
+    #[arg(long = "user", value_name = "USER")]
+    pub all_user: Option<String>,
+
+    /// Quick workflow SSH private key path (OpenSSH defaults are used when omitted)
+    #[arg(long = "key", value_name = "PATH")]
+    pub all_key: Option<PathBuf>,
+
+    /// Prefix protected collection commands with non-interactive sudo in quick workflow
+    #[arg(long = "sudo")]
+    pub all_sudo: bool,
+
+    /// Quick workflow session name suffix
+    #[arg(long, value_name = "NAME")]
+    pub session: Option<String>,
+
+    /// Quick workflow output directory
+    #[arg(long, value_name = "DIR", default_value = "reports")]
+    pub reports_dir: PathBuf,
+
+    /// Quick workflow per-target timeout in seconds
+    #[arg(long = "timeout", default_value_t = 10)]
+    pub all_timeout: u64,
+
+    /// Quick workflow maximum concurrent operations
+    #[arg(long = "concurrency", default_value_t = 100)]
+    pub all_concurrency: usize,
+
+    /// Quick workflow maximum number of expanded targets
+    #[arg(long = "max-targets")]
+    pub all_max_targets: Option<usize>,
+
+    /// Suggested dashboard listen address printed after quick workflow completion
+    #[arg(long = "serve-listen", default_value = "127.0.0.1:8080")]
+    pub all_serve_listen: String,
+
     /// Enable verbose logging (RUST_LOG-style diagnostics on stderr)
     #[arg(short, long, global = true)]
     pub verbose: bool,
@@ -42,7 +101,7 @@ pub struct Cli {
     pub no_progress: bool,
 
     #[command(subcommand)]
-    pub command: Command,
+    pub command: Option<Command>,
 }
 
 #[derive(Debug, Subcommand)]

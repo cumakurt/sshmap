@@ -76,7 +76,7 @@ Every push and pull request runs `npm ci && npm run build` in `dashboard/` along
 
 If the server is started with `--token`, store the same value from the Tools page. The dashboard sends it as the `X-SSHMap-Token` header on API requests.
 
-Creating baselines or exceptions from the dashboard requires `sshmap serve --allow-write-api --token ...`.
+Creating baselines or exceptions from the dashboard requires `sshmap serve --allow-write-api` with a write-capable `--token` or `--write-token`.
 
 Detail pages show breadcrumb navigation (for example `Hosts / web01`) instead of single back links.
 

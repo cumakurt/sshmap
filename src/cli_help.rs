@@ -5,6 +5,8 @@ WORKFLOW
   init -> discover/scan/import -> analyze -> risks/graph/report
 
 EXAMPLES
+  sshmap -a -t 192.168.0.0/24
+  sshmap -a -f /etc/hosts
   sshmap init --db inventory.db
   sshmap discover --file hosts.txt --db inventory.db
   sshmap scan --file hosts.txt --user audit --key ~/.ssh/id_ed25519 --db inventory.db

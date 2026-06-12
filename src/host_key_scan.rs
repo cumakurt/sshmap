@@ -15,12 +15,6 @@ pub async fn scan_server_host_keys(
     port: u16,
     timeout_duration: Duration,
 ) -> Vec<ScannedServerHostKey> {
-    let address = if host.contains(':') && !host.starts_with('[') {
-        format!("[{host}]:{port}")
-    } else {
-        format!("{host}:{port}")
-    };
-
     let mut command = Command::new("ssh-keyscan");
     command
         .arg("-p")
@@ -29,7 +23,7 @@ pub async fn scan_server_host_keys(
         .arg("3")
         .arg("-t")
         .arg("rsa,ecdsa,ed25519")
-        .arg(&address)
+        .arg(ssh_keyscan_target_arg(host))
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
 
@@ -55,7 +49,9 @@ pub fn parse_ssh_keyscan_output(content: &str) -> Vec<ScannedServerHostKey> {
         let Some((_, key_type, public_key)) = parse_ssh_keyscan_line(trimmed) else {
             continue;
         };
-        let fingerprint_sha256 = fingerprint_public_key(&public_key);
+        let Some(fingerprint_sha256) = fingerprint_public_key(&public_key) else {
+            continue;
+        };
         keys.push(ScannedServerHostKey {
             key_type,
             fingerprint_sha256,
@@ -76,16 +72,26 @@ fn parse_ssh_keyscan_line(line: &str) -> Option<(String, String, String)> {
     Some((host, key_type, public_key))
 }
 
-fn fingerprint_public_key(public_key: &str) -> String {
+fn ssh_keyscan_target_arg(host: &str) -> String {
+    host.trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_string()
+}
+
+fn fingerprint_public_key(public_key: &str) -> Option<String> {
     use base64::Engine;
     use base64::engine::general_purpose::STANDARD;
     use sha2::{Digest, Sha256};
-    let blob = public_key.split_whitespace().nth(1).unwrap_or(public_key);
-    let bytes = STANDARD.decode(blob).unwrap_or_default();
-    format!(
+    let blob = public_key.split_whitespace().next()?;
+    let bytes = STANDARD.decode(blob).ok()?;
+    if bytes.is_empty() {
+        return None;
+    }
+    Some(format!(
         "SHA256:{}",
         base64::engine::general_purpose::STANDARD_NO_PAD.encode(Sha256::digest(bytes))
-    )
+    ))
 }
 
 #[cfg(test)]
@@ -100,5 +106,17 @@ mod tests {
         assert_eq!(keys.len(), 1);
         assert_eq!(keys[0].key_type, "ssh-ed25519");
         assert!(keys[0].fingerprint_sha256.starts_with("SHA256:"));
+    }
+
+    #[test]
+    fn skips_invalid_ssh_keyscan_key_blob() {
+        let keys = parse_ssh_keyscan_output("example.com ssh-ed25519 not@@base64\n");
+        assert!(keys.is_empty());
+    }
+
+    #[test]
+    fn ssh_keyscan_target_arg_does_not_append_port() {
+        assert_eq!(ssh_keyscan_target_arg("example.com"), "example.com");
+        assert_eq!(ssh_keyscan_target_arg("[2001:db8::1]"), "2001:db8::1");
     }
 }

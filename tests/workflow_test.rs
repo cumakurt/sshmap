@@ -121,6 +121,42 @@ fn offline_import_analyze_and_report_workflow() {
 }
 
 #[test]
+fn quick_all_file_workflow_creates_session_artifacts() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let hosts_path = temp_dir.path().join("hosts");
+    let reports_dir = temp_dir.path().join("reports");
+    fs::write(&hosts_path, "203.0.113.1 example-host\n").expect("write hosts");
+
+    let output = run_sshmap(&["-a", "-f"])
+        .arg(&hosts_path)
+        .arg("--reports-dir")
+        .arg(&reports_dir)
+        .args(["--session", "smoke", "--timeout", "1", "--concurrency", "1"])
+        .output()
+        .expect("run quick all");
+    assert_success(&output);
+
+    let stdout = String::from_utf8(output.stdout).expect("utf8 stdout");
+    assert!(stdout.contains("Interactive dashboard command:"));
+    assert!(stdout.contains("serve --read-only --db"));
+
+    let session_dir = reports_dir
+        .read_dir()
+        .expect("reports dir")
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find(|path| path.is_dir())
+        .expect("session dir");
+
+    assert!(session_dir.join("sshmap.db").is_file());
+    assert!(session_dir.join("report.html").is_file());
+    assert!(session_dir.join("report.json").is_file());
+    assert!(session_dir.join("graph.json").is_file());
+    assert!(session_dir.join("evidence-bundle.zip").is_file());
+    assert!(session_dir.join("csv").join("hosts.csv").is_file());
+}
+
+#[test]
 fn bench_command_runs_on_seeded_database() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let db_path = temp_dir.path().join("bench.db");

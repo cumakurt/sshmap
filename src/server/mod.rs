@@ -44,6 +44,13 @@ pub struct ResolvedApiTokens {
     pub write_token: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum TokenScope {
+    Read,
+    Write,
+    Both,
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub db_path: PathBuf,
@@ -66,8 +73,10 @@ pub async fn run_server(config: ServerConfig) -> Result<()> {
         validate_dashboard_dir(dashboard_dir)?;
     }
 
-    if config.allow_write_api && config.write_token.is_none() && config.read_token.is_none() {
-        bail!("--token or --write-token is required when --allow-write-api is enabled");
+    if config.allow_write_api && config.write_token.is_none() {
+        bail!(
+            "--token or --write-token with write scope is required when --allow-write-api is enabled"
+        );
     }
 
     let require_token = config.require_token || require_token_from_env();
@@ -132,15 +141,24 @@ fn normalize_api_token(token: Option<String>) -> Result<Option<String>> {
         return Ok(None);
     };
 
+    Ok(Some(normalize_api_token_secret(&token)?))
+}
+
+fn normalize_api_token_secret(token: &str) -> Result<String> {
+    const API_TOKEN_MAX_BYTES: usize = 4096;
+
     let token = token.trim().to_string();
     if token.is_empty() {
         bail!("API token cannot be empty or whitespace");
+    }
+    if token.len() > API_TOKEN_MAX_BYTES {
+        bail!("API token cannot exceed {API_TOKEN_MAX_BYTES} bytes");
     }
     if token.chars().any(char::is_control) {
         bail!("API token cannot contain control characters");
     }
 
-    Ok(Some(token))
+    Ok(token)
 }
 
 pub fn resolve_api_tokens(
@@ -148,9 +166,9 @@ pub fn resolve_api_tokens(
     read_token: Option<String>,
     write_token: Option<String>,
 ) -> Result<ResolvedApiTokens> {
-    let legacy_parsed = parse_scoped_token(legacy)?;
-    let read_parsed = parse_scoped_token(read_token)?;
-    let write_parsed = parse_scoped_token(write_token)?;
+    let legacy_parsed = parse_scoped_token(legacy, TokenScope::Both, "--token")?;
+    let read_parsed = parse_scoped_token(read_token, TokenScope::Read, "--read-token")?;
+    let write_parsed = parse_scoped_token(write_token, TokenScope::Write, "--write-token")?;
 
     let mut read = None;
     let mut write = None;
@@ -160,9 +178,9 @@ pub fn resolve_api_tokens(
         .flatten()
     {
         match parsed.1 {
-            "read" => read = Some(parsed.0),
-            "write" => write = Some(parsed.0),
-            _ => {
+            TokenScope::Read => read = Some(parsed.0),
+            TokenScope::Write => write = Some(parsed.0),
+            TokenScope::Both => {
                 read = Some(parsed.0.clone());
                 write = Some(parsed.0);
             }
@@ -175,16 +193,35 @@ pub fn resolve_api_tokens(
     })
 }
 
-fn parse_scoped_token(value: Option<String>) -> Result<Option<(String, &'static str)>> {
+fn parse_scoped_token(
+    value: Option<String>,
+    default_scope: TokenScope,
+    argument_name: &str,
+) -> Result<Option<(String, TokenScope)>> {
     let Some(value) = normalize_api_token(value)? else {
         return Ok(None);
     };
-    if let Some(secret) = value.strip_prefix("read:") {
-        Ok(Some((secret.to_string(), "read")))
+
+    let (secret, scope) = if let Some(secret) = value.strip_prefix("read:") {
+        (normalize_api_token_secret(secret)?, TokenScope::Read)
     } else if let Some(secret) = value.strip_prefix("write:") {
-        Ok(Some((secret.to_string(), "write")))
+        (normalize_api_token_secret(secret)?, TokenScope::Write)
     } else {
-        Ok(Some((value, "both")))
+        (value, default_scope)
+    };
+
+    if !scope_allowed_for_argument(scope, default_scope) {
+        bail!("{argument_name} received a token with an incompatible scope prefix");
+    }
+
+    Ok(Some((secret, scope)))
+}
+
+fn scope_allowed_for_argument(scope: TokenScope, argument_scope: TokenScope) -> bool {
+    match argument_scope {
+        TokenScope::Both => true,
+        TokenScope::Read => scope == TokenScope::Read,
+        TokenScope::Write => scope == TokenScope::Write,
     }
 }
 
@@ -251,10 +288,7 @@ pub fn build_app(state: AppState, dashboard_dir: Option<PathBuf>) -> Router {
     app.layer(TraceLayer::new_for_http()).with_state(state)
 }
 
-pub fn build_rate_limited_app(
-    state: AppState,
-    dashboard_dir: Option<PathBuf>,
-) -> Result<Router> {
+pub fn build_rate_limited_app(state: AppState, dashboard_dir: Option<PathBuf>) -> Result<Router> {
     let rate_limit = GovernorConfigBuilder::default()
         .per_second(20)
         .burst_size(40)
@@ -359,6 +393,36 @@ mod tests {
     fn rejects_empty_api_token() {
         let error = normalize_api_token(Some("  ".to_string())).expect_err("empty token");
         assert!(error.to_string().contains("cannot be empty"));
+    }
+
+    #[test]
+    fn rejects_empty_scoped_api_token_secret() {
+        let error = resolve_api_tokens(None, Some("read:".to_string()), None)
+            .expect_err("empty scoped token");
+        assert!(error.to_string().contains("cannot be empty"));
+    }
+
+    #[test]
+    fn legacy_api_token_grants_read_and_write() {
+        let tokens =
+            resolve_api_tokens(Some("shared-secret".to_string()), None, None).expect("tokens");
+        assert_eq!(tokens.read_token.as_deref(), Some("shared-secret"));
+        assert_eq!(tokens.write_token.as_deref(), Some("shared-secret"));
+    }
+
+    #[test]
+    fn plain_read_token_does_not_grant_write_scope() {
+        let tokens =
+            resolve_api_tokens(None, Some("read-secret".to_string()), None).expect("tokens");
+        assert_eq!(tokens.read_token.as_deref(), Some("read-secret"));
+        assert!(tokens.write_token.is_none());
+    }
+
+    #[test]
+    fn rejects_incompatible_scoped_token_argument() {
+        let error = resolve_api_tokens(None, Some("write:secret".to_string()), None)
+            .expect_err("incompatible scope");
+        assert!(error.to_string().contains("incompatible scope"));
     }
 
     #[tokio::test]

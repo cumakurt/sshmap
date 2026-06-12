@@ -61,7 +61,45 @@ async fn main() -> Result<()> {
     init_tracing(cli.verbose);
     let app_config = config::load_optional(cli.config.as_deref())?;
 
-    match cli.command {
+    if cli.all {
+        if cli.command.is_some() {
+            anyhow::bail!("-a/--all cannot be combined with a subcommand");
+        }
+        cli::print_authorization_notice();
+        run_all_quick_workflow(
+            &app_config,
+            cli.risk_policy.as_deref(),
+            AllQuickOptions {
+                targets: cli.all_targets.clone(),
+                file: cli.all_file.clone(),
+                user: cli.all_user.clone(),
+                key: cli.all_key.clone(),
+                sudo: cli.all_sudo,
+                reports_dir: cli.reports_dir.clone(),
+                session: cli.session.clone(),
+                timeout_seconds: cli.all_timeout,
+                concurrency: cli.all_concurrency,
+                max_targets: cli.all_max_targets,
+                serve_listen: cli.all_serve_listen.clone(),
+                show_progress: progress::resolve_show_progress(false, no_progress),
+            },
+        )
+        .await?;
+        return Ok(());
+    }
+
+    if quick_all_arguments_supplied(&cli) {
+        anyhow::bail!("quick workflow target options require -a/--all");
+    }
+
+    let Some(command) = cli.command else {
+        use clap::CommandFactory;
+        let mut command = Cli::command();
+        command.print_long_help()?;
+        return Ok(());
+    };
+
+    match command {
         Command::Init(args) => {
             db::initialize_database(&args.db)?;
             println!("Initialized database: {}", args.db.display());
@@ -552,13 +590,8 @@ async fn main() -> Result<()> {
                 anyhow::bail!("graph node {} was not found", args.to);
             };
             let slice = db::load_graph_edges_for_analysis(&args.db, args.full_graph)?;
-            let paths = graph::find_all_paths(
-                &slice.edges,
-                start,
-                end,
-                args.limit.max(1),
-                slice.truncated,
-            );
+            let paths =
+                graph::find_all_paths(&slice.edges, start, end, args.limit.max(1), slice.truncated);
             if args.json {
                 println!("{}", serde_json::to_string_pretty(&paths)?);
             } else {
@@ -768,8 +801,8 @@ async fn main() -> Result<()> {
                 config::resolve_dashboard_dir(&app_config, args.dashboard.as_deref());
             let tokens = server::resolve_api_tokens(
                 args.token.or(serve.token),
-                args.read_token,
-                args.write_token,
+                args.read_token.or(serve.read_token),
+                args.write_token.or(serve.write_token),
             )?;
             server::run_server(server::ServerConfig {
                 db_path,
@@ -1078,6 +1111,28 @@ fn run_scan_dry_run(app_config: &config::SshMapConfig, args: &cli::ScanArgs) -> 
     Ok(())
 }
 
+struct AllQuickOptions {
+    targets: Option<String>,
+    file: Option<PathBuf>,
+    user: Option<String>,
+    key: Option<PathBuf>,
+    sudo: bool,
+    reports_dir: PathBuf,
+    session: Option<String>,
+    timeout_seconds: u64,
+    concurrency: usize,
+    max_targets: Option<usize>,
+    serve_listen: String,
+    show_progress: bool,
+}
+
+struct AllQuickArtifacts {
+    session_name: String,
+    session_dir: PathBuf,
+    db_path: PathBuf,
+    written_files: Vec<PathBuf>,
+}
+
 struct ScanPhaseOptions {
     targets: Option<String>,
     file: Option<PathBuf>,
@@ -1100,6 +1155,454 @@ struct ScanPhaseOptions {
     no_connection_reuse: bool,
     proxy_jump: Option<String>,
     db: PathBuf,
+}
+
+fn quick_all_arguments_supplied(cli: &Cli) -> bool {
+    cli.all_targets.is_some()
+        || cli.all_file.is_some()
+        || cli.all_user.is_some()
+        || cli.all_key.is_some()
+        || cli.all_sudo
+        || cli.session.is_some()
+        || cli.all_max_targets.is_some()
+}
+
+async fn run_all_quick_workflow(
+    app_config: &config::SshMapConfig,
+    cli_risk_policy: Option<&Path>,
+    options: AllQuickOptions,
+) -> Result<()> {
+    if options.targets.is_none() && options.file.is_none() {
+        anyhow::bail!("-a/--all requires -t/--target or -f/--file");
+    }
+
+    let session_name = build_quick_session_name(&options);
+    let session_dir = options.reports_dir.join(&session_name);
+    let db_path = session_dir.join("sshmap.db");
+    std::fs::create_dir_all(&session_dir)?;
+    db::initialize_database(&db_path)?;
+
+    let scan = config::scan_config(app_config);
+    let discover = config::discover_config(app_config);
+    let runtime = config::runtime_config(app_config);
+    let concurrency = discover
+        .concurrency
+        .or(scan.concurrency)
+        .or(runtime.concurrency)
+        .unwrap_or(options.concurrency)
+        .max(1);
+    let timeout = discover
+        .timeout_seconds
+        .or(scan.timeout_seconds)
+        .or(runtime.timeout_seconds)
+        .unwrap_or(options.timeout_seconds)
+        .max(1);
+    let max_targets = config::resolve_max_targets(app_config, options.max_targets);
+    let targets = scope::enforce_max_targets(
+        scope::load_target_endpoints(options.targets.as_deref(), options.file.as_deref(), "22")?,
+        max_targets,
+    )?;
+
+    println!("Quick all session: {session_name}");
+    println!("Output directory: {}", session_dir.display());
+    println!("Database: {}", db_path.display());
+    println!("Targets expanded: {}", targets.len());
+
+    let discovery_summary = discovery::run_discovery(
+        targets,
+        concurrency,
+        std::time::Duration::from_secs(timeout),
+        &db_path,
+        options.show_progress,
+    )
+    .await?;
+    println!(
+        "Discovery complete: {} targets, {} SSH open",
+        discovery_summary.targets_scanned, discovery_summary.ssh_open
+    );
+
+    let open_hosts = db::list_hosts_with_query(
+        &db_path,
+        &models::HostQuery {
+            ssh_open: Some(true),
+            limit: max_targets,
+            ..models::HostQuery::default()
+        },
+    )?;
+    let scan_targets = open_hosts
+        .iter()
+        .filter_map(|host| {
+            let port = u16::try_from(host.port).ok()?;
+            Some(scope::TargetEndpoint {
+                host: host.ip_address.clone(),
+                port,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    if scan_targets.is_empty() {
+        println!("Authenticated scan skipped: no SSH services were discovered.");
+    } else {
+        let username = resolve_quick_scan_username(&options, &scan)?;
+        let identity_file = options.key.clone().or_else(|| scan.key.clone());
+        if let Some(path) = identity_file.as_deref()
+            && !path.exists()
+        {
+            anyhow::bail!("identity file not found: {}", path.display());
+        }
+        let use_sudo = options.sudo || scan.sudo.unwrap_or(false);
+        let auth = transport::ScanAuth {
+            identity_file,
+            use_agent: scan
+                .use_agent
+                .unwrap_or_else(|| std::env::var_os("SSH_AUTH_SOCK").is_some()),
+            agent_socket: scan.identity_agent.clone(),
+            identities_only: false,
+        };
+        let host_key_policy = config::resolve_strict_host_key_policy(app_config, None, None)?;
+        let connection_reuse = config::resolve_connection_reuse(app_config, false);
+        let proxy_jump = config::resolve_proxy_jump(app_config, None)?;
+
+        println!(
+            "Authenticated OpenSSH scan: {} hosts as {}",
+            scan_targets.len(),
+            username
+        );
+        let scan_summary =
+            collector::remote::run_remote_scan(collector::remote::RemoteScanRequest {
+                targets: scan_targets,
+                username,
+                auth,
+                use_sudo,
+                concurrency,
+                timeout: std::time::Duration::from_secs(timeout),
+                db_path: db_path.clone(),
+                show_progress: options.show_progress,
+                transport: transport::TransportKind::OpenSsh,
+                host_key_policy,
+                connection_reuse,
+                proxy_jump,
+            })
+            .await?;
+        println!(
+            "Authenticated scan complete: {} succeeded, {} failed, {} evidence items",
+            scan_summary.hosts_succeeded, scan_summary.hosts_failed, scan_summary.evidence_items
+        );
+    }
+
+    let config_policy_path = config::risk_policy_path(app_config);
+    let policy_path = cli_risk_policy.or(config_policy_path.as_deref());
+    let policy = risk::load_risk_policy(policy_path)?;
+    let analysis_summary = analyzer::run_analysis(
+        &db_path,
+        models::AnalyzeScope::All,
+        &policy,
+        false,
+        options.show_progress,
+    )?;
+    let stats = db::load_detailed_database_stats(&db_path)?;
+    println!(
+        "Analysis complete: {} risks, {} graph edges",
+        analysis_summary.risks, stats.graph_edges
+    );
+
+    match enrich::enrich_dns(&db_path, 10_000, true) {
+        Ok(summary) => println!("DNS enrichment complete: {} aliases", summary.imported),
+        Err(error) => eprintln!("Warning: DNS enrichment skipped: {error}"),
+    }
+
+    let baseline = db::create_baseline(&db_path, &session_name)?;
+    println!("Baseline created: {}", baseline.name);
+
+    let artifacts = write_all_quick_artifacts(&session_name, &session_dir, &db_path)?;
+    println!("Artifacts written:");
+    for path in &artifacts.written_files {
+        println!("- {}", path.display());
+    }
+
+    println!();
+    println!("Interactive dashboard command:");
+    println!(
+        "{} serve --read-only --db {} --listen {}",
+        shell_quote(&binary_name()),
+        shell_quote_path(&artifacts.db_path),
+        shell_quote(&options.serve_listen)
+    );
+    println!("Session: {}", artifacts.session_name);
+    println!("Report directory: {}", artifacts.session_dir.display());
+
+    Ok(())
+}
+
+fn resolve_quick_scan_username(
+    options: &AllQuickOptions,
+    scan: &config::ScanConfig,
+) -> Result<String> {
+    let username = options
+        .user
+        .clone()
+        .or_else(|| scan.user.clone())
+        .or_else(current_os_username)
+        .ok_or_else(|| anyhow::anyhow!("could not determine current OS user; pass --user"))?;
+    transport::auth::validate_ssh_username(&username)?;
+    Ok(username)
+}
+
+fn current_os_username() -> Option<String> {
+    std::env::var("USER")
+        .ok()
+        .or_else(|| std::env::var("USERNAME").ok())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn build_quick_session_name(options: &AllQuickOptions) -> String {
+    let timestamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ");
+    let source = options
+        .session
+        .as_deref()
+        .or(options.targets.as_deref())
+        .or_else(|| {
+            options
+                .file
+                .as_deref()
+                .and_then(|path| path.file_stem())
+                .and_then(|stem| stem.to_str())
+        })
+        .unwrap_or("all");
+    format!("{timestamp}-{}", sanitize_session_component(source))
+}
+
+fn sanitize_session_component(value: &str) -> String {
+    let mut output = String::new();
+    let mut last_dash = false;
+
+    for character in value.chars() {
+        let mapped = if character.is_ascii_alphanumeric() {
+            Some(character.to_ascii_lowercase())
+        } else if matches!(character, '-' | '_' | '.') {
+            Some(character)
+        } else {
+            Some('-')
+        };
+        let Some(character) = mapped else {
+            continue;
+        };
+        if character == '-' {
+            if last_dash {
+                continue;
+            }
+            last_dash = true;
+        } else {
+            last_dash = false;
+        }
+        output.push(character);
+        if output.len() >= 64 {
+            break;
+        }
+    }
+
+    let output = output.trim_matches('-').to_string();
+    if output.is_empty() {
+        "all".to_string()
+    } else {
+        output
+    }
+}
+
+fn write_all_quick_artifacts(
+    session_name: &str,
+    session_dir: &Path,
+    db_path: &Path,
+) -> Result<AllQuickArtifacts> {
+    let mut written_files = vec![db_path.to_path_buf()];
+    let report_data = report::build_report(db_path)?;
+    write_artifact(
+        &session_dir.join("report.html"),
+        &report::render_report(&report_data, report::ReportFormat::Html)?,
+        &mut written_files,
+    )?;
+    write_artifact(
+        &session_dir.join("report.json"),
+        &report::render_report(&report_data, report::ReportFormat::Json)?,
+        &mut written_files,
+    )?;
+
+    let csv_dir = session_dir.join("csv");
+    for path in report::write_csv_report(&report_data, &csv_dir, db_path)? {
+        written_files.push(PathBuf::from(path));
+    }
+
+    let edges = db::list_graph_edges(db_path)?;
+    write_artifact(
+        &session_dir.join("graph.json"),
+        &graph::render_graph_export(&edges, graph::GraphExportFormat::Json)?,
+        &mut written_files,
+    )?;
+    write_artifact(
+        &session_dir.join("graph.dot"),
+        &graph::render_graph_export(&edges, graph::GraphExportFormat::Dot)?,
+        &mut written_files,
+    )?;
+    write_artifact(
+        &session_dir.join("graph-cytoscape.json"),
+        &graph::render_graph_export(&edges, graph::GraphExportFormat::Cytoscape)?,
+        &mut written_files,
+    )?;
+
+    let risks = db::list_risks(
+        db_path,
+        &models::RiskQuery {
+            severity: None,
+            code: None,
+            limit: 10_000,
+        },
+    )?;
+    write_artifact(
+        &session_dir.join("summary.json"),
+        &export::export_summary_json(db_path)?,
+        &mut written_files,
+    )?;
+    write_artifact(
+        &session_dir.join("risks.json"),
+        &export::export_risks(
+            db_path,
+            export::RiskExportFormat::Json,
+            &models::RiskQuery {
+                severity: None,
+                code: None,
+                limit: 10_000,
+            },
+        )?,
+        &mut written_files,
+    )?;
+    write_artifact(
+        &session_dir.join("risks.ndjson"),
+        &export::export_risks(
+            db_path,
+            export::RiskExportFormat::Ndjson,
+            &models::RiskQuery {
+                severity: None,
+                code: None,
+                limit: 10_000,
+            },
+        )?,
+        &mut written_files,
+    )?;
+    write_artifact(
+        &session_dir.join("hosts.json"),
+        &export::export_hosts(db_path, export::HostExportFormat::Json, 10_000)?,
+        &mut written_files,
+    )?;
+    write_artifact(
+        &session_dir.join("hosts.csv"),
+        &export::export_hosts(db_path, export::HostExportFormat::Csv, 10_000)?,
+        &mut written_files,
+    )?;
+    write_artifact(
+        &session_dir.join("known-hosts.json"),
+        &export::export_known_hosts(db_path, export::KnownHostExportFormat::Json, 10_000)?,
+        &mut written_files,
+    )?;
+    write_artifact(
+        &session_dir.join("known-hosts.csv"),
+        &export::export_known_hosts(db_path, export::KnownHostExportFormat::Csv, 10_000)?,
+        &mut written_files,
+    )?;
+    write_artifact(
+        &session_dir.join("ssh-config.json"),
+        &export::export_ssh_config(db_path, export::SshConfigExportFormat::Json, 10_000)?,
+        &mut written_files,
+    )?;
+    write_artifact(
+        &session_dir.join("ssh-config.csv"),
+        &export::export_ssh_config(db_path, export::SshConfigExportFormat::Csv, 10_000)?,
+        &mut written_files,
+    )?;
+
+    let risk_codes = db::list_active_risk_codes(db_path)?;
+    write_artifact(
+        &session_dir.join("compliance.json"),
+        &serde_json::to_string_pretty(&compliance::build_compliance_report("all", &risk_codes))?,
+        &mut written_files,
+    )?;
+    write_artifact(
+        &session_dir.join("hardening.json"),
+        &serde_json::to_string_pretty(&hardening::build_hardening_report(
+            &db::list_hosts(db_path, 10_000)?,
+            &risks,
+        ))?,
+        &mut written_files,
+    )?;
+    write_artifact(
+        &session_dir.join("risks.sarif.json"),
+        &sarif::export_risks_sarif(&risks, env!("CARGO_PKG_VERSION")),
+        &mut written_files,
+    )?;
+    write_artifact(
+        &session_dir.join("remediation.sh"),
+        &remediation_export::export_remediation(
+            &risks,
+            remediation_export::RemediationExportFormat::Shell,
+        ),
+        &mut written_files,
+    )?;
+    write_artifact(
+        &session_dir.join("remediation.yml"),
+        &remediation_export::export_remediation(
+            &risks,
+            remediation_export::RemediationExportFormat::Ansible,
+        ),
+        &mut written_files,
+    )?;
+
+    let bundle_path =
+        bundle_export::export_evidence_bundle(bundle_export::EvidenceBundleOptions {
+            db_path,
+            output: &session_dir.join("evidence-bundle.zip"),
+            host: None,
+            include_raw_evidence: true,
+        })?;
+    written_files.push(bundle_path);
+
+    Ok(AllQuickArtifacts {
+        session_name: session_name.to_string(),
+        session_dir: session_dir.to_path_buf(),
+        db_path: db_path.to_path_buf(),
+        written_files,
+    })
+}
+
+fn write_artifact(path: &Path, content: &str, written_files: &mut Vec<PathBuf>) -> Result<()> {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, content)?;
+    written_files.push(path.to_path_buf());
+    Ok(())
+}
+
+fn binary_name() -> String {
+    std::env::args()
+        .next()
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "sshmap".to_string())
+}
+
+fn shell_quote_path(path: &Path) -> String {
+    shell_quote(&path.display().to_string())
+}
+
+fn shell_quote(value: &str) -> String {
+    if value.chars().all(|character| {
+        character.is_ascii_alphanumeric() || matches!(character, '/' | '.' | '_' | '-' | ':')
+    }) {
+        value.to_string()
+    } else {
+        format!("'{}'", value.replace('\'', "'\\''"))
+    }
 }
 
 async fn run_workflow_once(

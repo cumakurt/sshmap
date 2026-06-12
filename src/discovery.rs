@@ -68,7 +68,7 @@ pub async fn run_discovery(
 }
 
 async fn scan_target(target: TargetEndpoint, timeout_duration: Duration) -> DiscoveryResult {
-    let address = format!("{}:{}", target.host, target.port);
+    let address = socket_address(&target.host, target.port);
     match timeout(timeout_duration, TcpStream::connect(&address)).await {
         Ok(Ok(mut stream)) => match read_ssh_banner(&mut stream, timeout_duration).await {
             Ok(banner) => {
@@ -144,6 +144,14 @@ async fn read_ssh_banner(
     Ok(banner)
 }
 
+fn socket_address(host: &str, port: u16) -> String {
+    if host.parse::<IpAddr>().is_ok() && host.contains(':') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -176,5 +184,15 @@ mod tests {
         };
 
         assert_eq!(result.hostname_hint(), Some("web01.local"));
+    }
+
+    #[test]
+    fn socket_address_brackets_ipv6_targets() {
+        assert_eq!(socket_address("2001:db8::1", 22), "[2001:db8::1]:22");
+        assert_eq!(socket_address("192.0.2.10", 2222), "192.0.2.10:2222");
+        assert_eq!(
+            socket_address("web01.example.com", 22),
+            "web01.example.com:22"
+        );
     }
 }

@@ -482,6 +482,24 @@ See `docs/doctor.md` for the full check list.
 
 ## Quick Start
 
+Full one-command run. This creates a timestamped session under `reports/`, discovers SSH on port 22, collects evidence with the system `ssh` client, analyzes findings, writes reports/graphs/exports, and prints the `serve` command for the web UI:
+
+```bash
+sshmap -a -t 192.168.0.0/24
+sshmap -a -f /etc/hosts
+```
+
+Optional quick-run controls:
+
+```bash
+sshmap -a -t 10.10.0.0/24 --user audit --key ~/.ssh/audit_ed25519 --sudo
+sshmap -a -f hosts.txt --session branch-office --reports-dir reports --timeout 5
+```
+
+The quick workflow uses OpenSSH directly (`ssh`) with your SSH config, agent, and default keys when `--key` is omitted. Outputs are written to `reports/<timestamp-session>/`, including `sshmap.db`, HTML/JSON/CSV reports, graph exports, SARIF, remediation files, and an evidence bundle.
+
+Manual workflow:
+
 ```bash
 sshmap init --db sshmap.db
 sshmap doctor
@@ -669,7 +687,7 @@ sshmap serve --db sshmap.db --listen 127.0.0.1:8080 --read-only --require-token 
 
 Send the token in the `X-SSHMap-Token` header. The React dashboard stores it in browser local storage from the Tools page. `/health` is unauthenticated; `/api/*` routes are rate-limited per client IP. Graph analysis endpoints load up to **10,000 edges** by default (same as CLI); override with `SSHMAP_GRAPH_EDGE_LIMIT` on the server or `--full-graph` on CLI path commands.
 
-Write API endpoints are disabled by default. To create baselines or exceptions through HTTP, start the server with an explicit token and `--allow-write-api`:
+Write API endpoints are disabled by default. To create baselines or exceptions through HTTP, start the server with a write-capable token and `--allow-write-api`:
 
 ```bash
 sshmap serve --db sshmap.db --listen 127.0.0.1:8080 --read-only \

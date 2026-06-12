@@ -92,6 +92,7 @@ fn parse_target_file_content(content: &str) -> Vec<String> {
         .filter_map(|line| line.split('#').next())
         .map(str::trim)
         .filter(|line| !line.is_empty())
+        .filter_map(|line| line.split_whitespace().next())
         .map(ToOwned::to_owned)
         .collect()
 }
@@ -157,6 +158,18 @@ mod tests {
         );
 
         assert_eq!(targets, vec!["10.0.0.1", "web01.local"]);
+    }
+
+    #[test]
+    fn parses_etc_hosts_style_target_file_content() {
+        let targets = parse_target_file_content(
+            "
+            127.0.0.1 localhost
+            192.0.2.10 web01 web01.internal # comment
+            ",
+        );
+
+        assert_eq!(targets, vec!["127.0.0.1", "192.0.2.10"]);
     }
 
     #[test]

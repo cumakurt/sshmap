@@ -1,4 +1,5 @@
 use anyhow::{Context, Result, bail};
+use reqwest::Url;
 use std::net::IpAddr;
 use std::path::Path;
 
@@ -11,31 +12,16 @@ const MAX_GRAPH_NODE_REFERENCE_BYTES: usize = 512;
 const GRAPH_NODE_TYPES: &[&str] = &["host", "user", "key", "public_key", "sudo_rule"];
 
 pub fn validate_webhook_url(url: &str) -> Result<()> {
-    let trimmed = url.trim();
-    if trimmed.is_empty() {
-        bail!("webhook URL cannot be empty");
-    }
-    if trimmed.contains(char::is_whitespace) {
-        bail!("webhook URL cannot contain whitespace");
-    }
+    let parsed = parse_webhook_url(url)?;
 
-    let (scheme, authority) = if let Some(rest) = trimmed.strip_prefix("https://") {
-        ("https", rest)
-    } else if let Some(rest) = trimmed.strip_prefix("http://") {
-        ("http", rest)
-    } else {
-        bail!("webhook URL must use https:// (or http:// for localhost only)");
-    };
-
-    let host = extract_url_host(authority)?;
-    if scheme == "http" {
-        if !is_localhost_hostname(&host) {
+    if parsed.scheme == "http" {
+        if !is_localhost_hostname(&parsed.host) {
             bail!("http webhook URLs are only allowed for localhost");
         }
         return Ok(());
     }
 
-    if is_blocked_webhook_host(&host) {
+    if is_blocked_webhook_host(&parsed.host) {
         bail!("webhook URL host is not allowed");
     }
 
@@ -59,9 +45,10 @@ pub fn validate_baseline_name(name: &str, allow_latest: bool) -> Result<()> {
         }
         bail!("latest is a reserved baseline name");
     }
-    if !name.chars().all(|character| {
-        character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.')
-    }) {
+    if !name
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.'))
+    {
         bail!(
             "baseline name must contain only ASCII letters, digits, hyphen, underscore, or period"
         );
@@ -240,23 +227,6 @@ pub fn validate_import_host_identifier(host: &str) -> Result<()> {
     bail!("invalid host identifier: {host}");
 }
 
-fn extract_url_host(authority: &str) -> Result<String> {
-    let authority = authority.split('/').next().unwrap_or(authority);
-    let authority = authority
-        .rsplit_once('@')
-        .map(|(_, host_port)| host_port)
-        .unwrap_or(authority);
-    let host = authority
-        .rsplit_once(':')
-        .and_then(|(host, port)| port.parse::<u16>().ok().map(|_| host))
-        .unwrap_or(authority);
-    let host = host.trim_matches(|character| character == '[' || character == ']');
-    if host.is_empty() {
-        bail!("webhook URL host is missing");
-    }
-    Ok(host.to_ascii_lowercase())
-}
-
 fn is_localhost_hostname(host: &str) -> bool {
     matches!(host, "localhost" | "127.0.0.1" | "::1")
 }
@@ -286,56 +256,68 @@ pub struct WebhookEndpoint {
     pub allow_localhost_only: bool,
 }
 
-pub fn parse_webhook_endpoint(url: &str) -> Result<WebhookEndpoint> {
-    validate_webhook_url(url)?;
-    let trimmed = url.trim();
-    let (scheme, authority) = if let Some(rest) = trimmed.strip_prefix("https://") {
-        ("https", rest)
-    } else if let Some(rest) = trimmed.strip_prefix("http://") {
-        ("http", rest)
-    } else {
-        bail!("webhook URL must use https:// (or http:// for localhost only)");
-    };
+struct ParsedWebhookUrl {
+    url: Url,
+    scheme: String,
+    host: String,
+    port: u16,
+}
 
-    let host = extract_url_host(authority)?;
-    let port = extract_url_port(authority, scheme == "https")?;
-    let path_and_query = authority
-        .split_once('/')
-        .map(|(_, remainder)| remainder)
-        .unwrap_or("");
-    let request_url = build_webhook_request_url(scheme, &host, port, path_and_query);
-    Ok(WebhookEndpoint {
-        url: request_url,
+fn parse_webhook_url(url: &str) -> Result<ParsedWebhookUrl> {
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+        bail!("webhook URL cannot be empty");
+    }
+    if trimmed.contains(char::is_whitespace) {
+        bail!("webhook URL cannot contain whitespace");
+    }
+
+    let parsed = Url::parse(trimmed).context("invalid webhook URL")?;
+    let scheme = parsed.scheme().to_string();
+    if scheme != "https" && scheme != "http" {
+        bail!("webhook URL must use https:// (or http:// for localhost only)");
+    }
+    if parsed.cannot_be_a_base() {
+        bail!("webhook URL must include an authority");
+    }
+
+    let host = parsed
+        .host_str()
+        .filter(|host| !host.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("webhook URL host is missing"))?
+        .trim_matches(|character| character == '[' || character == ']')
+        .to_ascii_lowercase();
+    let port = parsed
+        .port_or_known_default()
+        .ok_or_else(|| anyhow::anyhow!("webhook URL port is missing"))?;
+
+    Ok(ParsedWebhookUrl {
+        url: parsed,
+        scheme,
         host,
         port,
-        allow_localhost_only: scheme == "http",
     })
 }
 
-fn build_webhook_request_url(scheme: &str, host: &str, port: u16, path_and_query: &str) -> String {
-    let default_port = if scheme == "https" { 443 } else { 80 };
-    let authority = if host.contains(':') {
-        format!("[{host}]")
-    } else {
-        host.to_string()
-    };
-    let authority = if port == default_port {
-        authority
-    } else {
-        format!("{authority}:{port}")
-    };
-    if path_and_query.is_empty() {
-        format!("{scheme}://{authority}")
-    } else {
-        format!("{scheme}://{authority}/{path_and_query}")
-    }
+pub fn parse_webhook_endpoint(url: &str) -> Result<WebhookEndpoint> {
+    validate_webhook_url(url)?;
+    let parsed = parse_webhook_url(url)?;
+    let mut request_url = parsed.url.clone();
+    let _ = request_url.set_username("");
+    let _ = request_url.set_password(None);
+    request_url.set_fragment(None);
+    Ok(WebhookEndpoint {
+        url: request_url.to_string(),
+        host: parsed.host,
+        port: parsed.port,
+        allow_localhost_only: parsed.scheme == "http",
+    })
 }
 
 pub async fn resolve_webhook_addresses(
     endpoint: &WebhookEndpoint,
 ) -> Result<Vec<std::net::SocketAddr>> {
-    let lookup = format!("{}:{}", endpoint.host, endpoint.port);
-    let mut addresses = tokio::net::lookup_host(&lookup)
+    let mut addresses = tokio::net::lookup_host((endpoint.host.as_str(), endpoint.port))
         .await
         .with_context(|| format!("failed to resolve webhook host {}", endpoint.host))?
         .collect::<Vec<_>>();
@@ -357,23 +339,6 @@ pub async fn resolve_webhook_addresses(
     addresses.sort_by_key(|address| address.ip());
     addresses.dedup_by(|left, right| left.ip() == right.ip() && left.port() == right.port());
     Ok(addresses)
-}
-
-fn extract_url_port(authority: &str, is_https: bool) -> Result<u16> {
-    let authority = authority.split('/').next().unwrap_or(authority);
-    let host_port = authority
-        .rsplit_once('@')
-        .map(|(_, value)| value)
-        .unwrap_or(authority);
-    if let Some((host, port)) = host_port.rsplit_once(':')
-        && port.parse::<u16>().is_ok()
-        && (host.starts_with('[') || !host.contains(':'))
-    {
-        return port
-            .parse()
-            .with_context(|| format!("invalid webhook port: {port}"));
-    }
-    Ok(if is_https { 443 } else { 80 })
 }
 
 fn is_loopback_ip(ip: IpAddr) -> bool {
@@ -502,6 +467,16 @@ mod tests {
     }
 
     #[test]
+    fn rejects_invalid_webhook_port() {
+        assert!(validate_webhook_url("https://hooks.example.com:99999/hook").is_err());
+    }
+
+    #[test]
+    fn rejects_loopback_ipv6_webhook_target() {
+        assert!(validate_webhook_url("https://[::1]/hook").is_err());
+    }
+
+    #[test]
     fn parses_webhook_endpoint_port() {
         let endpoint = parse_webhook_endpoint("https://hooks.example.com:8443/sshmap").unwrap();
         assert_eq!(endpoint.host, "hooks.example.com");
@@ -513,8 +488,8 @@ mod tests {
     #[test]
     fn strips_webhook_url_credentials_from_request_url() {
         let endpoint =
-            parse_webhook_endpoint("https://user:secret@hooks.example.com/sshmap").unwrap();
-        assert_eq!(endpoint.url, "https://hooks.example.com/sshmap");
+            parse_webhook_endpoint("https://user:secret@hooks.example.com/sshmap?x=1").unwrap();
+        assert_eq!(endpoint.url, "https://hooks.example.com/sshmap?x=1");
         assert!(!endpoint.url.contains("secret"));
         assert!(!endpoint.url.contains('@'));
     }

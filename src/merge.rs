@@ -33,9 +33,8 @@ pub fn merge_databases(sources: &[&Path], output: &Path) -> Result<MergeSummary>
     };
 
     for source_path in sources {
-        let source = Connection::open(source_path).with_context(|| {
-            format!("failed to open source database {}", source_path.display())
-        })?;
+        let source = Connection::open(source_path)
+            .with_context(|| format!("failed to open source database {}", source_path.display()))?;
         summary.hosts_imported += copy_hosts(&source, &destination)?;
         summary.risks_imported += copy_risks(&source, &destination)?;
         summary.graph_edges_imported += copy_graph_edges(&source, &destination)?;
@@ -90,8 +89,8 @@ fn copy_hosts(source: &Connection, destination: &Connection) -> Result<usize> {
                 last_seen = excluded.last_seen,
                 source = excluded.source",
             params![
-                row.0, row.1, row.2, row.3, row.4, row.5, row.6, row.7, row.8, row.9, row.10, row.11,
-                row.12, row.13
+                row.0, row.1, row.2, row.3, row.4, row.5, row.6, row.7, row.8, row.9, row.10,
+                row.11, row.12, row.13
             ],
         )?;
         imported += 1;
@@ -149,8 +148,8 @@ fn copy_risks(source: &Connection, destination: &Connection) -> Result<usize> {
                 title, description, impact, evidence, recommendation, status, first_seen, last_seen
             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             params![
-                host_id, row.2, row.3, row.4, row.5, row.6, row.7, row.8, row.9, row.10, row.11, row.12,
-                row.13, row.14, row.15
+                host_id, row.2, row.3, row.4, row.5, row.6, row.7, row.8, row.9, row.10, row.11,
+                row.12, row.13, row.14, row.15
             ],
         )?;
         imported += 1;

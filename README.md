@@ -30,6 +30,7 @@ Run `sshmap` or `sshmap --help` for the full command reference. Use `sshmap <com
 - [Installation](#installation)
 - [Quick Start](#quick-start)
 - [Configuration](#configuration)
+- [Live Progress](#live-progress)
 - [Command Examples](#command-examples)
 - [Web Server, API, and Dashboard](#web-server-api-and-dashboard)
 - [End-to-End Workflow](#end-to-end-workflow)
@@ -97,6 +98,8 @@ Discovery performs concurrent TCP checks against IP addresses, CIDR ranges, host
 sshmap discover --targets 10.10.0.0/24 --ports 22,2222 --concurrency 100 --db sshmap.db
 ```
 
+Live progress (host:port and completion percentage) is printed to **stderr** when stderr is a terminal. See [Live Progress](#live-progress).
+
 ### Authenticated Scan (`scan`)
 
 **Purpose:** Collect read-only SSH security evidence from live hosts using an audit SSH key or agent.
@@ -115,6 +118,7 @@ After connecting, SSHMap runs a fixed set of remote commands (passwd, groups, au
 | `--strict-host-key` | Control host key verification (`yes`, `no`, `accept-new`) |
 | `--no-connection-reuse` | Disable OpenSSH ControlMaster per-host multiplexing |
 | `--dry-run` | Print planned read-only remote commands per target without connecting or writing evidence |
+| `--progress` | Force live progress on stderr (enabled by default on terminals) |
 
 **When to use:** Authorized assessments where you have SSH access and want live, complete evidence.
 
@@ -129,6 +133,8 @@ Private key file **contents** are never stored. Sensitive patterns in collected 
 Local scan executes the same read-only collection commands locally, including `/etc/hosts`, effective `sshd -T`, and OS metadata collection. Useful for bastions, CI runners, or air-gapped analysis workstations.
 
 Use `--sudo` when passwordless sudo is required to read `/etc/ssh`, `/etc/sudoers`, and user home directories.
+
+Live progress reports each evidence type as it is collected (see [Live Progress](#live-progress)).
 
 **Output:** Same raw evidence pipeline as remote scan; host source is recorded as a local collection.
 
@@ -180,6 +186,8 @@ The analyzer:
 | `--risk-policy` | YAML file to disable rules or change severity thresholds |
 | `--incremental --only graph` | Skip graph rebuild when no new evidence since last run |
 
+Phase progress (loading evidence, parsing, generating risks, persisting) is printed to stderr on terminals. See [Live Progress](#live-progress).
+
 **When to use:** After every discovery, scan, or import batch.
 
 **Output:** Populated `users`, `public_keys`, `authorized_keys`, `risks`, `graph_edges`, `host_aliases`, `data_quality_findings`, host metadata, and related tables.
@@ -188,7 +196,7 @@ The analyzer:
 
 **Purpose:** Run the standard audit chain in one command.
 
-`sshmap workflow run` executes discovery, authenticated scan, analysis, and optional DNS enrichment. It is a wrapper around existing read-only phases, so each phase still records normal scan run history.
+`sshmap workflow run` executes discovery, authenticated scan, analysis, and optional DNS enrichment. It is a wrapper around existing read-only phases, so each phase still records normal scan run history. Phase banners and per-target progress are shown on stderr when running on a terminal.
 
 ```bash
 sshmap workflow run --file examples/hosts.txt --user audituser --key ~/.ssh/audit_ed25519 \
@@ -398,10 +406,13 @@ Use in release pipelines to catch performance regressions.
 - Opens the database in **read-only** mode
 - Serves JSON REST endpoints under `/api/*`
 - Optional embedded HTML dashboard or React build from `dashboard/dist`
-- Optional `--token`, `--read-token`, or `--write-token` authentication (`X-SSHMap-Token` header); required on non-loopback binds
+- Optional `--token`, `--read-token`, or `--write-token` authentication (`X-SSHMap-Token` header, constant-time compare); required on non-loopback binds
+- Set `SSHMAP_REQUIRE_TOKEN=1` or pass `--require-token` to require tokens even on loopback
+- Read endpoints use a SQLite read-only connection pool; write routes open the database for mutations
+- Rate limiting on `/api/*` (20 req/s, burst 40 per client IP)
 - `--allow-write-api` enables baseline/exception writes; write routes require the write-scoped token when tokens are split
 
-See [Web Server, API, and Dashboard](#web-server-api-and-dashboard) for endpoint list.
+See [Web Server, API, and Dashboard](#web-server-api-and-dashboard) for endpoint list. Security boundaries are documented in [SECURITY.md](SECURITY.md).
 
 ### Shell Completion (`completion`)
 
@@ -418,6 +429,10 @@ sshmap completion --shell bash > ~/.local/share/bash-completion/completions/sshm
 Only use SSHMap against systems you own or are explicitly authorized to assess.
 
 SSHMap supports read-only inspection through the system OpenSSH client or the built-in native transport. It does not brute force, exploit, or attempt password login. An authorization notice is printed before discovery, scan, and local-scan commands.
+
+Webhook URLs are validated (HTTPS required except loopback HTTP), DNS is resolved and pinned per request, redirects are disabled, and URL credentials are stripped before outbound delivery. Import host identifiers are validated before evidence is stored.
+
+See [SECURITY.md](SECURITY.md) for API authentication, native transport dependency notes, and reporting security issues.
 
 ---
 
@@ -472,13 +487,43 @@ See `examples/sshmap.yaml` for scan, discover, serve, and database defaults.
 
 ---
 
+## Live Progress
+
+Long-running commands print **live status to stderr** when stderr is an interactive terminal (stdout stays clean for piping and scripts).
+
+| Command | What you see |
+|---------|----------------|
+| `discover` | `discover: 42/100 (42%) 10.0.0.5:22` — updates on the same line |
+| `scan` | `scan: 15/50 (30%) web01.example.com:22` |
+| `workflow run` | Phase banners (`discovery`, `scan`, `analyze`) plus per-target progress in each phase |
+| `analyze` | Phase steps: loading evidence, parsing, generating risks, persisting |
+| `local-scan` | Current evidence type (`passwd`, `sshd_config`, …) |
+| `watch` | Analyze phase progress on each scheduled cycle |
+
+**Defaults:** Progress is on when stderr is a TTY. Disable globally with `--no-progress`. Force on in non-TTY environments (CI logs, redirected stderr) with `--progress` on `discover`, `scan`, or `workflow run`.
+
+```bash
+# Default: live progress on an interactive terminal
+sshmap discover --targets 10.10.0.0/24 --db sshmap.db
+
+# Disable progress (quiet batch jobs)
+sshmap --no-progress scan --file hosts.txt --user audit --key ~/.ssh/id_ed25519 --db sshmap.db
+
+# Force progress in CI or when stderr is redirected
+sshmap scan --progress --file hosts.txt --user audit --key ~/.ssh/id_ed25519 --db sshmap.db 2>scan.log
+```
+
+Progress uses carriage-return line updates on terminals and periodic line logs when stderr is not a TTY.
+
+---
+
 ## Command Examples
 
 ### Discovery
 
 ```bash
 sshmap discover --targets 10.10.0.0/24 --ports 22 --concurrency 100 --db sshmap.db
-sshmap discover --file examples/hosts.txt --ports 22,2222 --db sshmap.db
+sshmap discover --file examples/hosts.txt --ports 22,2222 --progress --db sshmap.db
 ```
 
 ### Authenticated Scan
@@ -584,13 +629,14 @@ cd dashboard && npm ci && npm run build
 sshmap serve --db sshmap.db --listen 127.0.0.1:8080 --read-only --dashboard dashboard/dist
 ```
 
-API token (required on non-loopback addresses):
+API token (required on non-loopback addresses; optional on loopback unless `SSHMAP_REQUIRE_TOKEN=1`):
 
 ```bash
 sshmap serve --db sshmap.db --listen 127.0.0.1:8080 --read-only --token "$SSHMAP_TOKEN"
+sshmap serve --db sshmap.db --listen 127.0.0.1:8080 --read-only --require-token --token "$SSHMAP_TOKEN"
 ```
 
-Send the token in the `X-SSHMap-Token` header. The React dashboard stores it in browser local storage from the Tools page.
+Send the token in the `X-SSHMap-Token` header. The React dashboard stores it in browser local storage from the Tools page. `/health` is unauthenticated; `/api/*` routes are rate-limited per client IP.
 
 Write API endpoints are disabled by default. To create baselines or exceptions through HTTP, start the server with an explicit token and `--allow-write-api`:
 
@@ -657,6 +703,7 @@ sshmap discover --file examples/hosts.txt --ports 22 --concurrency 100 --db cust
 
 sshmap scan --file examples/hosts.txt --user audituser --key ~/.ssh/audit_ed25519 \
   --sudo --timeout 10 --concurrency 20 --db customer.db
+# Live progress appears on stderr during discover and scan when running in a terminal
 
 sshmap scan-runs list --db customer.db
 sshmap analyze --db customer.db

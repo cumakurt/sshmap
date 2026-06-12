@@ -17,9 +17,74 @@ use crate::models::{
 use crate::target::{hostname_hint, is_ip_address, parse_host_target};
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
+use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, TransactionBehavior, params};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use uuid::Uuid;
+
+#[derive(Clone)]
+pub struct ReadOnlyPool {
+    pool: Arc<r2d2::Pool<SqliteConnectionManager>>,
+}
+
+pub trait ReadOnlyDbAccess {
+    fn with_read_connection<T, F>(&self, callback: F) -> Result<T>
+    where
+        F: FnOnce(&Connection) -> Result<T>;
+}
+
+impl ReadOnlyDbAccess for Path {
+    fn with_read_connection<T, F>(&self, callback: F) -> Result<T>
+    where
+        F: FnOnce(&Connection) -> Result<T>,
+    {
+        with_read_only_connection(self, callback)
+    }
+}
+
+impl ReadOnlyDbAccess for PathBuf {
+    fn with_read_connection<T, F>(&self, callback: F) -> Result<T>
+    where
+        F: FnOnce(&Connection) -> Result<T>,
+    {
+        with_read_only_connection(self, callback)
+    }
+}
+
+impl ReadOnlyDbAccess for ReadOnlyPool {
+    fn with_read_connection<T, F>(&self, callback: F) -> Result<T>
+    where
+        F: FnOnce(&Connection) -> Result<T>,
+    {
+        let connection = self
+            .pool
+            .get()
+            .context("failed to acquire read-only database connection from pool")?;
+        apply_read_only_pragmas(&connection)?;
+        callback(&connection)
+    }
+}
+
+impl ReadOnlyPool {
+    pub fn open(path: &Path) -> Result<Self> {
+        if !path.exists() {
+            bail!("database not found: {}", path.display());
+        }
+
+        let manager = SqliteConnectionManager::file(path)
+            .with_flags(OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX);
+        let pool = r2d2::Pool::builder()
+            .max_size(8)
+            .connection_timeout(std::time::Duration::from_secs(5))
+            .build(manager)
+            .with_context(|| format!("failed to create read-only pool for {}", path.display()))?;
+
+        Ok(Self {
+            pool: Arc::new(pool),
+        })
+    }
+}
 
 const MIGRATIONS: &[(i64, &str)] = &[
     (1, include_str!("../migrations/001_init.sql")),
@@ -38,10 +103,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
         10,
         include_str!("../migrations/010_server_keys_compliance.sql"),
     ),
-    (
-        11,
-        include_str!("../migrations/011_extended_features.sql"),
-    ),
+    (11, include_str!("../migrations/011_extended_features.sql")),
 ];
 
 pub fn initialize_database(path: &Path) -> Result<()> {
@@ -60,8 +122,10 @@ pub fn load_database_stats(path: &Path) -> Result<DatabaseStats> {
     load_database_stats_connection(&connection)
 }
 
-pub fn load_database_stats_read_only(path: &Path) -> Result<DatabaseStats> {
-    with_read_only_connection(path, load_database_stats_connection)
+pub fn load_database_stats_read_only(
+    source: &(impl ReadOnlyDbAccess + ?Sized),
+) -> Result<DatabaseStats> {
+    source.with_read_connection(load_database_stats_connection)
 }
 
 fn load_database_stats_connection(connection: &Connection) -> Result<DatabaseStats> {
@@ -442,10 +506,11 @@ pub fn list_scan_runs(path: &Path, limit: usize) -> Result<Vec<ScanRunRecord>> {
     list_scan_runs_connection(&connection, limit)
 }
 
-pub fn list_scan_runs_read_only(path: &Path, limit: usize) -> Result<Vec<ScanRunRecord>> {
-    with_read_only_connection(path, |connection| {
-        list_scan_runs_connection(connection, limit)
-    })
+pub fn list_scan_runs_read_only(
+    source: &(impl ReadOnlyDbAccess + ?Sized),
+    limit: usize,
+) -> Result<Vec<ScanRunRecord>> {
+    source.with_read_connection(|connection| list_scan_runs_connection(connection, limit))
 }
 
 fn list_scan_runs_connection(connection: &Connection, limit: usize) -> Result<Vec<ScanRunRecord>> {
@@ -470,12 +535,10 @@ pub fn get_scan_run(path: &Path, id_or_uuid: &str) -> Result<Option<ScanRunDetai
 }
 
 pub fn get_scan_run_read_only(
-    path: &Path,
+    source: &(impl ReadOnlyDbAccess + ?Sized),
     id_or_uuid: &str,
 ) -> Result<Option<ScanRunDetailRecord>> {
-    with_read_only_connection(path, |connection| {
-        get_scan_run_connection(connection, id_or_uuid)
-    })
+    source.with_read_connection(|connection| get_scan_run_connection(connection, id_or_uuid))
 }
 
 fn get_scan_run_connection(
@@ -535,10 +598,10 @@ pub fn list_user_nodes_by_username(path: &Path, username: &str) -> Result<Vec<Gr
 }
 
 pub fn list_user_nodes_by_username_read_only(
-    path: &Path,
+    source: &(impl ReadOnlyDbAccess + ?Sized),
     username: &str,
 ) -> Result<Vec<GraphNodeRecord>> {
-    with_read_only_connection(path, |connection| {
+    source.with_read_connection(|connection| {
         list_user_nodes_by_username_connection(connection, username)
     })
 }
@@ -574,10 +637,25 @@ pub fn list_public_key_nodes_by_fingerprint(
     let connection = Connection::open(path)
         .with_context(|| format!("failed to open database at {}", path.display()))?;
     apply_pragmas(&connection)?;
+    list_public_key_nodes_by_fingerprint_connection(&connection, fingerprint)
+}
+
+pub fn list_public_key_nodes_by_fingerprint_read_only(
+    source: &(impl ReadOnlyDbAccess + ?Sized),
+    fingerprint: &str,
+) -> Result<Vec<GraphNodeRecord>> {
+    source.with_read_connection(|connection| {
+        list_public_key_nodes_by_fingerprint_connection(connection, fingerprint)
+    })
+}
+
+fn list_public_key_nodes_by_fingerprint_connection(
+    connection: &Connection,
+    fingerprint: &str,
+) -> Result<Vec<GraphNodeRecord>> {
     let normalized = fingerprint.strip_prefix("key:").unwrap_or(fingerprint);
-    let mut statement = connection.prepare(
-        "SELECT id, fingerprint_sha256 FROM public_keys WHERE fingerprint_sha256 = ?1",
-    )?;
+    let mut statement = connection
+        .prepare("SELECT id, fingerprint_sha256 FROM public_keys WHERE fingerprint_sha256 = ?1")?;
     let rows = statement.query_map(params![normalized], |row| {
         Ok(GraphNodeRecord {
             node_type: "PUBLIC_KEY".to_string(),
@@ -889,8 +967,11 @@ pub fn list_risks(path: &Path, query: &RiskQuery) -> Result<Vec<RiskRecord>> {
     list_risks_connection(&connection, query)
 }
 
-pub fn list_risks_read_only(path: &Path, query: &RiskQuery) -> Result<Vec<RiskRecord>> {
-    with_read_only_connection(path, |connection| list_risks_connection(connection, query))
+pub fn list_risks_read_only(
+    source: &(impl ReadOnlyDbAccess + ?Sized),
+    query: &RiskQuery,
+) -> Result<Vec<RiskRecord>> {
+    source.with_read_connection(|connection| list_risks_connection(connection, query))
 }
 
 fn list_risks_connection(connection: &Connection, query: &RiskQuery) -> Result<Vec<RiskRecord>> {
@@ -943,8 +1024,11 @@ pub fn get_risk(path: &Path, risk_id: i64) -> Result<Option<RiskRecord>> {
     get_risk_connection(&connection, risk_id)
 }
 
-pub fn get_risk_read_only(path: &Path, risk_id: i64) -> Result<Option<RiskRecord>> {
-    with_read_only_connection(path, |connection| get_risk_connection(connection, risk_id))
+pub fn get_risk_read_only(
+    source: &(impl ReadOnlyDbAccess + ?Sized),
+    risk_id: i64,
+) -> Result<Option<RiskRecord>> {
+    source.with_read_connection(|connection| get_risk_connection(connection, risk_id))
 }
 
 fn get_risk_connection(connection: &Connection, risk_id: i64) -> Result<Option<RiskRecord>> {
@@ -975,9 +1059,12 @@ pub fn list_hosts_with_query(path: &Path, query: &HostQuery) -> Result<Vec<HostR
     list_hosts_connection(&connection, query)
 }
 
-pub fn list_hosts_read_only(path: &Path, limit: usize) -> Result<Vec<HostRecord>> {
+pub fn list_hosts_read_only(
+    source: &(impl ReadOnlyDbAccess + ?Sized),
+    limit: usize,
+) -> Result<Vec<HostRecord>> {
     list_hosts_read_only_with_query(
-        path,
+        source,
         &HostQuery {
             limit,
             ..HostQuery::default()
@@ -985,8 +1072,11 @@ pub fn list_hosts_read_only(path: &Path, limit: usize) -> Result<Vec<HostRecord>
     )
 }
 
-pub fn list_hosts_read_only_with_query(path: &Path, query: &HostQuery) -> Result<Vec<HostRecord>> {
-    with_read_only_connection(path, |connection| list_hosts_connection(connection, query))
+pub fn list_hosts_read_only_with_query(
+    source: &(impl ReadOnlyDbAccess + ?Sized),
+    query: &HostQuery,
+) -> Result<Vec<HostRecord>> {
+    source.with_read_connection(|connection| list_hosts_connection(connection, query))
 }
 
 fn list_hosts_connection(connection: &Connection, query: &HostQuery) -> Result<Vec<HostRecord>> {
@@ -1042,10 +1132,11 @@ pub fn get_host_detail(path: &Path, target: &str) -> Result<Option<HostDetailRec
     get_host_detail_connection(&connection, target)
 }
 
-pub fn get_host_detail_read_only(path: &Path, target: &str) -> Result<Option<HostDetailRecord>> {
-    with_read_only_connection(path, |connection| {
-        get_host_detail_connection(connection, target)
-    })
+pub fn get_host_detail_read_only(
+    source: &(impl ReadOnlyDbAccess + ?Sized),
+    target: &str,
+) -> Result<Option<HostDetailRecord>> {
+    source.with_read_connection(|connection| get_host_detail_connection(connection, target))
 }
 
 fn get_host_detail_connection(
@@ -1083,12 +1174,10 @@ pub fn list_user_summaries_with_query(
 }
 
 pub fn list_user_summaries_read_only_with_query(
-    path: &Path,
+    source: &(impl ReadOnlyDbAccess + ?Sized),
     query: &UserQuery,
 ) -> Result<Vec<UserSummaryRecord>> {
-    with_read_only_connection(path, |connection| {
-        list_user_summaries_connection(connection, query)
-    })
+    source.with_read_connection(|connection| list_user_summaries_connection(connection, query))
 }
 
 fn list_user_summaries_connection(
@@ -1156,10 +1245,11 @@ pub fn get_user_detail(path: &Path, username: &str) -> Result<Option<UserDetailR
     get_user_detail_connection(&connection, username)
 }
 
-pub fn get_user_detail_read_only(path: &Path, username: &str) -> Result<Option<UserDetailRecord>> {
-    with_read_only_connection(path, |connection| {
-        get_user_detail_connection(connection, username)
-    })
+pub fn get_user_detail_read_only(
+    source: &(impl ReadOnlyDbAccess + ?Sized),
+    username: &str,
+) -> Result<Option<UserDetailRecord>> {
+    source.with_read_connection(|connection| get_user_detail_connection(connection, username))
 }
 
 fn get_user_detail_connection(
@@ -1189,13 +1279,11 @@ pub fn list_keys(path: &Path, limit: usize, reuse_only: bool) -> Result<Vec<KeyS
 }
 
 pub fn list_keys_read_only(
-    path: &Path,
+    source: &(impl ReadOnlyDbAccess + ?Sized),
     limit: usize,
     reuse_only: bool,
 ) -> Result<Vec<KeySummaryRecord>> {
-    with_read_only_connection(path, |connection| {
-        list_keys_connection(connection, limit, reuse_only)
-    })
+    source.with_read_connection(|connection| list_keys_connection(connection, limit, reuse_only))
 }
 
 fn list_keys_connection(
@@ -1223,10 +1311,11 @@ pub fn get_key_detail(path: &Path, target: &str) -> Result<Option<KeyDetailRecor
     get_key_detail_connection(&connection, target)
 }
 
-pub fn get_key_detail_read_only(path: &Path, target: &str) -> Result<Option<KeyDetailRecord>> {
-    with_read_only_connection(path, |connection| {
-        get_key_detail_connection(connection, target)
-    })
+pub fn get_key_detail_read_only(
+    source: &(impl ReadOnlyDbAccess + ?Sized),
+    target: &str,
+) -> Result<Option<KeyDetailRecord>> {
+    source.with_read_connection(|connection| get_key_detail_connection(connection, target))
 }
 
 fn get_key_detail_connection(
@@ -1269,16 +1358,11 @@ pub fn add_risk_exception(
     path: &Path,
     exception: &NewRiskException,
 ) -> Result<RiskExceptionRecord> {
+    crate::security::validate_new_risk_exception(exception)?;
     initialize_database(path)?;
     let connection = Connection::open(path)
         .with_context(|| format!("failed to open database at {}", path.display()))?;
     apply_pragmas(&connection)?;
-
-    if let Some(expires_at) = &exception.expires_at {
-        chrono::DateTime::parse_from_rfc3339(expires_at).with_context(|| {
-            format!("invalid expires_at timestamp: {expires_at}; use RFC3339 format")
-        })?;
-    }
 
     let created_at = Utc::now().to_rfc3339();
     connection.execute(
@@ -1345,12 +1429,11 @@ pub fn create_baseline(path: &Path, name: &str) -> Result<BaselineRecord> {
         .with_context(|| format!("failed to open database at {}", path.display()))?;
     apply_pragmas(&connection)?;
 
-    let summary = load_baseline_summary(&connection)?;
-    let risk_snapshots = load_current_risk_snapshots(&connection)?;
+    let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let summary = load_baseline_summary(&tx)?;
+    let risk_snapshots = load_current_risk_snapshots(&tx)?;
     let created_at = Utc::now().to_rfc3339();
     let summary_json = serde_json::to_string(&summary)?;
-
-    let tx = connection.transaction()?;
     tx.execute(
         "INSERT INTO baselines (name, created_at, summary_json) VALUES (?1, ?2, ?3)",
         params![name, created_at, summary_json],
@@ -1380,8 +1463,10 @@ pub fn list_baselines(path: &Path) -> Result<Vec<BaselineRecord>> {
     list_baselines_connection(&connection)
 }
 
-pub fn list_baselines_read_only(path: &Path) -> Result<Vec<BaselineRecord>> {
-    with_read_only_connection(path, list_baselines_connection)
+pub fn list_baselines_read_only(
+    source: &(impl ReadOnlyDbAccess + ?Sized),
+) -> Result<Vec<BaselineRecord>> {
+    source.with_read_connection(list_baselines_connection)
 }
 
 fn list_baselines_connection(connection: &Connection) -> Result<Vec<BaselineRecord>> {
@@ -1586,12 +1671,7 @@ pub fn load_raw_evidence_for_scan_run(
 }
 
 fn map_evidence_row(row: &Row<'_>) -> rusqlite::Result<(i64, String, String, String)> {
-    Ok((
-        row.get(0)?,
-        row.get(1)?,
-        row.get(2)?,
-        row.get(3)?,
-    ))
+    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
 }
 
 pub fn list_recent_scan_run_ids(path: &Path, limit: usize) -> Result<Vec<i64>> {
@@ -1599,26 +1679,19 @@ pub fn list_recent_scan_run_ids(path: &Path, limit: usize) -> Result<Vec<i64>> {
     let connection = Connection::open(path)
         .with_context(|| format!("failed to open database at {}", path.display()))?;
     apply_pragmas(&connection)?;
-    let mut statement = connection.prepare(
-        "SELECT id FROM scan_runs WHERE status = 'completed' ORDER BY id DESC LIMIT ?1",
-    )?;
+    let mut statement = connection
+        .prepare("SELECT id FROM scan_runs WHERE status = 'completed' ORDER BY id DESC LIMIT ?1")?;
     let rows = statement.query_map(params![limit as i64], |row| row.get(0))?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .context("failed to list recent scan runs")
 }
 
-pub fn load_operations_metrics(path: &Path) -> Result<OperationsMetricsRecord> {
-    initialize_database(path)?;
-    let connection = Connection::open(path)
-        .with_context(|| format!("failed to open database at {}", path.display()))?;
-    apply_pragmas(&connection)?;
-
-    let total_hosts = count_rows(&connection, "hosts")?;
-    let hosts_with_users: usize = connection.query_row(
-        "SELECT COUNT(DISTINCT host_id) FROM users",
-        [],
-        |row| row.get(0),
-    )?;
+fn load_operations_metrics_connection(connection: &Connection) -> Result<OperationsMetricsRecord> {
+    let total_hosts = count_rows(connection, "hosts")?;
+    let hosts_with_users: usize =
+        connection.query_row("SELECT COUNT(DISTINCT host_id) FROM users", [], |row| {
+            row.get(0)
+        })?;
     let hosts_without_users = total_hosts.saturating_sub(hosts_with_users);
     let scan_coverage_percent = if total_hosts == 0 {
         0.0
@@ -1637,7 +1710,7 @@ pub fn load_operations_metrics(path: &Path) -> Result<OperationsMetricsRecord> {
         severity_distribution.insert(severity, count);
     }
 
-    let baselines = list_baselines(path)?;
+    let baselines = list_baselines_connection(connection)?;
     let baseline_trend = baselines
         .into_iter()
         .map(|baseline| BaselineTrendPoint {
@@ -1658,16 +1731,40 @@ pub fn load_operations_metrics(path: &Path) -> Result<OperationsMetricsRecord> {
     })
 }
 
-pub fn list_active_risk_codes(path: &Path) -> Result<Vec<String>> {
+pub fn load_operations_metrics(path: &Path) -> Result<OperationsMetricsRecord> {
     initialize_database(path)?;
     let connection = Connection::open(path)
         .with_context(|| format!("failed to open database at {}", path.display()))?;
     apply_pragmas(&connection)?;
+    load_operations_metrics_connection(&connection)
+}
+
+pub fn load_operations_metrics_read_only(
+    source: &(impl ReadOnlyDbAccess + ?Sized),
+) -> Result<OperationsMetricsRecord> {
+    source.with_read_connection(load_operations_metrics_connection)
+}
+
+fn list_active_risk_codes_connection(connection: &Connection) -> Result<Vec<String>> {
     let mut statement =
         connection.prepare("SELECT DISTINCT risk_code FROM risks ORDER BY risk_code")?;
     let rows = statement.query_map([], |row| row.get(0))?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .context("failed to list active risk codes")
+}
+
+pub fn list_active_risk_codes(path: &Path) -> Result<Vec<String>> {
+    initialize_database(path)?;
+    let connection = Connection::open(path)
+        .with_context(|| format!("failed to open database at {}", path.display()))?;
+    apply_pragmas(&connection)?;
+    list_active_risk_codes_connection(&connection)
+}
+
+pub fn list_active_risk_codes_read_only(
+    source: &(impl ReadOnlyDbAccess + ?Sized),
+) -> Result<Vec<String>> {
+    source.with_read_connection(list_active_risk_codes_connection)
 }
 
 pub fn rebuild_graph_edges(path: &Path) -> Result<()> {
@@ -1709,22 +1806,31 @@ pub fn list_graph_edges(path: &Path) -> Result<Vec<GraphEdgeRecord>> {
 }
 
 pub const GRAPH_ANALYSIS_EDGE_LIMIT: usize = 100_000;
+pub const GRAPH_API_ANALYSIS_EDGE_LIMIT: usize = 10_000;
 
 pub fn list_graph_edges_read_only_limited(
-    path: &Path,
+    source: &(impl ReadOnlyDbAccess + ?Sized),
     limit: usize,
 ) -> Result<Vec<GraphEdgeRecord>> {
-    with_read_only_connection(path, |connection| {
-        list_graph_edges_connection(connection, Some(limit))
-    })
+    source.with_read_connection(|connection| list_graph_edges_connection(connection, Some(limit)))
 }
 
-pub fn list_graph_edges_for_analysis(path: &Path) -> Result<Vec<GraphEdgeRecord>> {
-    list_graph_edges_read_only_limited(path, GRAPH_ANALYSIS_EDGE_LIMIT)
+pub fn list_graph_edges_for_analysis(
+    source: &(impl ReadOnlyDbAccess + ?Sized),
+) -> Result<Vec<GraphEdgeRecord>> {
+    list_graph_edges_read_only_limited(source, GRAPH_ANALYSIS_EDGE_LIMIT)
 }
 
-pub fn count_open_risks_by_severity_read_only(path: &Path) -> Result<(usize, usize)> {
-    with_read_only_connection(path, |connection| {
+pub fn list_graph_edges_for_api_analysis(
+    source: &(impl ReadOnlyDbAccess + ?Sized),
+) -> Result<Vec<GraphEdgeRecord>> {
+    list_graph_edges_read_only_limited(source, GRAPH_API_ANALYSIS_EDGE_LIMIT)
+}
+
+pub fn count_open_risks_by_severity_read_only(
+    source: &(impl ReadOnlyDbAccess + ?Sized),
+) -> Result<(usize, usize)> {
+    source.with_read_connection(|connection| {
         Ok((
             count_risks_by_severity(connection, "CRITICAL")?,
             count_risks_by_severity(connection, "HIGH")?,
@@ -1741,12 +1847,10 @@ pub fn list_known_host_entries(path: &Path, limit: usize) -> Result<Vec<KnownHos
 }
 
 pub fn list_known_host_entries_read_only(
-    path: &Path,
+    source: &(impl ReadOnlyDbAccess + ?Sized),
     limit: usize,
 ) -> Result<Vec<KnownHostEntryRecord>> {
-    with_read_only_connection(path, |connection| {
-        list_known_host_entries_connection(connection, limit)
-    })
+    source.with_read_connection(|connection| list_known_host_entries_connection(connection, limit))
 }
 
 fn list_known_host_entries_connection(
@@ -1796,18 +1900,19 @@ pub fn list_ssh_client_config_entries(
 }
 
 pub fn list_ssh_client_config_entries_read_only(
-    path: &Path,
+    source: &(impl ReadOnlyDbAccess + ?Sized),
     limit: usize,
 ) -> Result<Vec<SshClientConfigEntryRecord>> {
-    with_read_only_connection(path, |connection| {
+    source.with_read_connection(|connection| {
         list_ssh_client_config_entries_connection(connection, limit)
     })
 }
 
-pub fn list_host_aliases_read_only(path: &Path, limit: usize) -> Result<Vec<HostAliasRecord>> {
-    with_read_only_connection(path, |connection| {
-        list_host_aliases_connection(connection, limit)
-    })
+pub fn list_host_aliases_read_only(
+    source: &(impl ReadOnlyDbAccess + ?Sized),
+    limit: usize,
+) -> Result<Vec<HostAliasRecord>> {
+    source.with_read_connection(|connection| list_host_aliases_connection(connection, limit))
 }
 
 fn list_host_aliases_connection(
@@ -1844,12 +1949,11 @@ fn list_host_aliases_connection(
 }
 
 pub fn list_data_quality_findings_read_only(
-    path: &Path,
+    source: &(impl ReadOnlyDbAccess + ?Sized),
     limit: usize,
 ) -> Result<Vec<DataQualityFindingRecord>> {
-    with_read_only_connection(path, |connection| {
-        list_data_quality_findings_connection(connection, limit)
-    })
+    source
+        .with_read_connection(|connection| list_data_quality_findings_connection(connection, limit))
 }
 
 fn list_data_quality_findings_connection(
@@ -1981,8 +2085,10 @@ fn list_ssh_client_config_entries_connection(
         .context("failed to list ssh client config entries")
 }
 
-pub fn list_risk_exceptions_read_only(path: &Path) -> Result<Vec<RiskExceptionRecord>> {
-    with_read_only_connection(path, list_risk_exceptions_connection)
+pub fn list_risk_exceptions_read_only(
+    source: &(impl ReadOnlyDbAccess + ?Sized),
+) -> Result<Vec<RiskExceptionRecord>> {
+    source.with_read_connection(list_risk_exceptions_connection)
 }
 
 fn list_graph_edges_connection(
@@ -2024,12 +2130,11 @@ pub fn resolve_graph_node_ref(path: &Path, reference: &str) -> Result<Option<Gra
 }
 
 pub fn resolve_graph_node_ref_read_only(
-    path: &Path,
+    source: &(impl ReadOnlyDbAccess + ?Sized),
     reference: &str,
 ) -> Result<Option<GraphNodeRecord>> {
-    with_read_only_connection(path, |connection| {
-        resolve_graph_node_ref_connection(connection, reference)
-    })
+    source
+        .with_read_connection(|connection| resolve_graph_node_ref_connection(connection, reference))
 }
 
 fn resolve_graph_node_ref_connection(
@@ -2104,7 +2209,25 @@ fn apply_migrations(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
+const COUNTABLE_TABLES: &[&str] = &[
+    "hosts",
+    "users",
+    "public_keys",
+    "risks",
+    "raw_evidence",
+    "graph_edges",
+    "known_hosts_entries",
+    "ssh_client_config_entries",
+    "host_aliases",
+    "data_quality_findings",
+    "risk_exceptions",
+    "baselines",
+];
+
 fn count_rows(connection: &Connection, table_name: &str) -> Result<usize> {
+    if !COUNTABLE_TABLES.contains(&table_name) {
+        bail!("unsupported table name for count: {table_name}");
+    }
     let sql = format!("SELECT COUNT(*) FROM {table_name}");
     let count = connection.query_row(&sql, [], |row| row.get::<_, i64>(0))?;
     Ok(count as usize)
@@ -3792,7 +3915,9 @@ fn resolve_proxy_jump_host_ids(connection: &Connection, chain: &str) -> Result<V
     Ok(host_ids)
 }
 
-fn map_raw_evidence_bundle_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawEvidenceBundleRecord> {
+fn map_raw_evidence_bundle_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<RawEvidenceBundleRecord> {
     Ok(RawEvidenceBundleRecord {
         host_id: row.get(0)?,
         evidence_type: row.get(1)?,
@@ -3800,4 +3925,22 @@ fn map_raw_evidence_bundle_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawE
         content: row.get(3)?,
         collected_at: row.get(4)?,
     })
+}
+
+#[cfg(test)]
+mod pool_tests {
+    use super::*;
+
+    #[test]
+    fn read_only_pool_matches_path_reads() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let db_path = temp_dir.path().join("pool.db");
+        initialize_database(&db_path).expect("initialize");
+        let pool = ReadOnlyPool::open(&db_path).expect("pool");
+
+        let from_path = load_database_stats_read_only(db_path.as_path()).expect("path stats");
+        let from_pool = load_database_stats_read_only(&pool).expect("pool stats");
+        assert_eq!(from_path.hosts, from_pool.hosts);
+        assert_eq!(from_path.risks, from_pool.risks);
+    }
 }

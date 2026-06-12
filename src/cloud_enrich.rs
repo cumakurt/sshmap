@@ -24,7 +24,10 @@ pub struct CloudHostTags {
 pub fn enrich_from_tags_file(db_path: &Path, tags_file: &Path) -> Result<ImportSummary> {
     let content = std::fs::read_to_string(tags_file)
         .with_context(|| format!("failed to read cloud tags file {}", tags_file.display()))?;
-    let payload: CloudTagFile = if tags_file.extension().is_some_and(|ext| ext == "yaml" || ext == "yml") {
+    let payload: CloudTagFile = if tags_file
+        .extension()
+        .is_some_and(|ext| ext == "yaml" || ext == "yml")
+    {
         serde_yaml::from_str(&content)?
     } else {
         serde_json::from_str(&content)?

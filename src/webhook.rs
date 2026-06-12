@@ -1,7 +1,6 @@
 use serde::Serialize;
-use std::process::Stdio;
-use tokio::process::Command;
-use tokio::time::{Duration, timeout};
+use std::net::SocketAddr;
+use std::time::Duration;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct WebhookPayload {
@@ -21,28 +20,31 @@ pub struct WebhookSummary {
 }
 
 pub async fn send_webhook(url: &str, payload: &WebhookPayload) -> anyhow::Result<()> {
-    crate::security::validate_webhook_url(url)?;
+    let endpoint = crate::security::parse_webhook_endpoint(url)?;
+    let addresses = crate::security::resolve_webhook_addresses(&endpoint).await?;
     let body = serde_json::to_string(payload)?;
-    let output = timeout(
-        Duration::from_secs(15),
-        Command::new("curl")
-            .arg("-fsS")
-            .arg("-X")
-            .arg("POST")
-            .arg("-H")
-            .arg("Content-Type: application/json")
-            .arg("-d")
-            .arg(body)
-            .arg(url)
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .output(),
-    )
-    .await??;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("webhook request failed: {stderr}");
+    let mut client_builder = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(15));
+    for address in addresses {
+        client_builder =
+            client_builder.resolve(&endpoint.host, SocketAddr::new(address.ip(), endpoint.port));
+    }
+
+    let client = client_builder.build()?;
+    let response = client
+        .post(endpoint.url)
+        .header("Content-Type", "application/json")
+        .body(body)
+        .send()
+        .await?;
+
+    if !response.status().is_success() {
+        anyhow::bail!(
+            "webhook request failed with HTTP {}",
+            response.status().as_u16()
+        );
     }
     Ok(())
 }

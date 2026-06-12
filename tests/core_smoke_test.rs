@@ -161,7 +161,31 @@ fn rejects_invalid_exception_expiry() {
     .output()
     .expect("exceptions add");
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("invalid expires_at"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("expires_at"));
+}
+
+#[test]
+fn rejects_invalid_exception_username_on_cli() {
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let db_path = temp_dir.path().join("exception-user.db");
+    seed_analyzed_database(&db_path);
+
+    let output = run_sshmap(&[
+        "exceptions",
+        "add",
+        "--code",
+        "SSH_PASSWORD_AUTH_ENABLED",
+        "--reason",
+        "accepted",
+        "--username",
+        "bad user",
+        "--db",
+    ])
+    .arg(&db_path)
+    .output()
+    .expect("exceptions add");
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("username"));
 }
 
 #[test]

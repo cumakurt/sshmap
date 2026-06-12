@@ -647,28 +647,19 @@ pub fn format_evidence_drift_text(report: &EvidenceDriftReport) -> String {
 
 pub fn format_compliance_report_text(report: &ComplianceReport) -> String {
     let mut output = String::new();
-    writeln!(
-        output,
-        "Compliance report ({})",
-        report.framework
-    )
-    .expect("writing to String cannot fail");
+    writeln!(output, "Compliance report ({})", report.framework)
+        .expect("writing to String cannot fail");
     writeln!(
         output,
         "Passing: {}/{} ({:.1}%)",
-        report.passing_controls,
-        report.total_controls,
-        report.compliance_percent
+        report.passing_controls, report.total_controls, report.compliance_percent
     )
     .expect("writing to String cannot fail");
     for control in &report.controls {
         writeln!(
             output,
             "- [{}] {} {}: {}",
-            control.status,
-            control.framework,
-            control.control_id,
-            control.title
+            control.status, control.framework, control.control_id, control.title
         )
         .expect("writing to String cannot fail");
     }

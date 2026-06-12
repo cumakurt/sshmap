@@ -1,9 +1,9 @@
 use crate::models::{ParsedAuthorizedKey, ParsedPublicKey};
 use anyhow::Result;
-use std::collections::BTreeMap;
 use base64::Engine;
 use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 
 const KEY_TYPES: &[&str] = &[
     "ssh-ed25519",

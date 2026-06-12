@@ -116,10 +116,7 @@ pub fn compliance_controls() -> Vec<ComplianceControl> {
     ]
 }
 
-pub fn build_compliance_report(
-    framework: &str,
-    active_risk_codes: &[String],
-) -> ComplianceReport {
+pub fn build_compliance_report(framework: &str, active_risk_codes: &[String]) -> ComplianceReport {
     let active = active_risk_codes
         .iter()
         .map(|code| code.to_ascii_uppercase())
@@ -127,7 +124,8 @@ pub fn build_compliance_report(
     let controls = compliance_controls()
         .into_iter()
         .filter(|control| {
-            framework.eq_ignore_ascii_case("all") || control.framework.eq_ignore_ascii_case(framework)
+            framework.eq_ignore_ascii_case("all")
+                || control.framework.eq_ignore_ascii_case(framework)
         })
         .map(|control| {
             let failing_risk_codes = control
@@ -153,7 +151,10 @@ pub fn build_compliance_report(
         .collect::<Vec<_>>();
 
     let total_controls = controls.len();
-    let failing_controls = controls.iter().filter(|control| control.status == "FAIL").count();
+    let failing_controls = controls
+        .iter()
+        .filter(|control| control.status == "FAIL")
+        .count();
     let passing_controls = total_controls.saturating_sub(failing_controls);
     let compliance_percent = if total_controls == 0 {
         100.0
@@ -177,10 +178,7 @@ mod tests {
 
     #[test]
     fn computes_compliance_percent() {
-        let report = build_compliance_report(
-            "CIS",
-            &["SSH_PASSWORD_AUTH_ENABLED".to_string()],
-        );
+        let report = build_compliance_report("CIS", &["SSH_PASSWORD_AUTH_ENABLED".to_string()]);
         assert!(report.compliance_percent < 100.0);
         assert!(report.failing_controls >= 1);
     }

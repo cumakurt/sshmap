@@ -9,17 +9,31 @@ use std::process::Command;
 pub struct LocalScanRequest {
     pub use_sudo: bool,
     pub db_path: PathBuf,
+    pub show_progress: bool,
 }
 
 pub fn run_local_scan(request: LocalScanRequest) -> Result<RemoteScanSummary> {
     let (host, hostname, port) = detect_local_identity()?;
     let commands = default_local_commands();
+    let runnable_commands = commands
+        .iter()
+        .filter(|command| command.render(request.use_sudo).is_some())
+        .count();
+    let progress = crate::progress::ProgressReporter::new(
+        "local-scan",
+        runnable_commands.max(1),
+        request.show_progress,
+    );
     let mut evidence = Vec::new();
 
     for command in &commands {
         let Some(rendered_command) = command.render(request.use_sudo) else {
             continue;
         };
+
+        if request.show_progress {
+            progress.message(&format!("collecting {}", command.evidence_type));
+        }
 
         let output = run_shell_command(&rendered_command);
         let (content, stderr, exit_code) = match output {
@@ -38,7 +52,10 @@ pub fn run_local_scan(request: LocalScanRequest) -> Result<RemoteScanSummary> {
             exit_code,
             redacted: content_redacted || stderr_redacted,
         });
+        progress.tick_with_detail(Some(command.evidence_type));
     }
+
+    progress.finish();
 
     let result = HostScanResult {
         host: host.clone(),
@@ -96,9 +113,9 @@ fn detect_local_identity() -> Result<(String, Option<String>, u16)> {
                 Some(value.to_string())
             }
         })
-        .or_else(|| Some("127.0.0.1".to_string()));
+        .unwrap_or_else(|| "127.0.0.1".to_string());
 
-    Ok((ip.unwrap(), hostname, 22))
+    Ok((ip, hostname, 22))
 }
 
 #[cfg(test)]

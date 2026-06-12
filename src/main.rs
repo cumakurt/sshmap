@@ -2,8 +2,10 @@ mod about;
 mod analyzer;
 mod baseline;
 mod bench;
+mod bundle_export;
 mod cli;
 mod cli_help;
+mod cloud_enrich;
 mod collector;
 mod compliance;
 mod config;
@@ -15,15 +17,9 @@ mod enrich;
 mod error;
 mod evidence_drift;
 mod exceptions;
-mod bundle_export;
-mod cloud_enrich;
 mod export;
 mod graph;
 mod hardening;
-mod remediation_export;
-mod sarif;
-mod watch;
-mod webhook;
 mod host_context;
 mod host_key_scan;
 mod importer;
@@ -32,14 +28,18 @@ mod models;
 mod output;
 mod parser;
 mod progress;
+mod remediation_export;
 mod report;
 mod risk;
+mod sarif;
 mod scope;
 mod security;
 mod server;
 mod ssh_version;
 mod target;
 mod transport;
+mod watch;
+mod webhook;
 
 use anyhow::Result;
 use clap::Parser;
@@ -57,6 +57,7 @@ async fn main() -> Result<()> {
     }
 
     let cli = Cli::parse();
+    let no_progress = cli.no_progress;
     init_tracing(cli.verbose);
     let app_config = config::load_optional(cli.config.as_deref())?;
 
@@ -119,7 +120,7 @@ async fn main() -> Result<()> {
                 concurrency,
                 std::time::Duration::from_secs(timeout),
                 &db_path,
-                args.progress,
+                progress::resolve_show_progress(args.progress, no_progress),
             )
             .await?;
 
@@ -149,7 +150,7 @@ async fn main() -> Result<()> {
                         ports: args.ports,
                         concurrency: args.concurrency,
                         timeout: args.timeout,
-                        progress: args.progress,
+                        progress: progress::resolve_show_progress(args.progress, no_progress),
                         max_targets: args.max_targets,
                         transport: args.transport,
                         strict_host_key: args.strict_host_key,
@@ -175,7 +176,13 @@ async fn main() -> Result<()> {
                     if iterations > 1 {
                         println!("Workflow iteration {}/{}", iteration + 1, iterations);
                     }
-                    run_workflow_once(&app_config, cli.risk_policy.as_deref(), &args).await?;
+                    run_workflow_once(
+                        &app_config,
+                        cli.risk_policy.as_deref(),
+                        &args,
+                        progress::resolve_show_progress(args.progress, no_progress),
+                    )
+                    .await?;
                     if iteration + 1 < iterations
                         && let Some(seconds) = args.repeat_every_seconds
                     {
@@ -212,6 +219,7 @@ async fn main() -> Result<()> {
             let summary = collector::local::run_local_scan(collector::local::LocalScanRequest {
                 use_sudo: args.sudo,
                 db_path: args.db.clone(),
+                show_progress: progress::resolve_show_progress(false, no_progress),
             })?;
 
             println!("Local host scanned: 1");
@@ -229,6 +237,7 @@ async fn main() -> Result<()> {
                 cli::analyze_scope(args.only),
                 &policy,
                 args.incremental,
+                progress::resolve_show_progress(false, no_progress),
             )?;
 
             if summary.skipped {
@@ -416,7 +425,9 @@ async fn main() -> Result<()> {
                     _ => {
                         let runs = db::list_recent_scan_run_ids(&args.db, 2)?;
                         if runs.len() < 2 {
-                            anyhow::bail!("at least two completed scan runs are required for evidence drift");
+                            anyhow::bail!(
+                                "at least two completed scan runs are required for evidence drift"
+                            );
                         }
                         (runs[1], runs[0])
                     }
@@ -427,7 +438,8 @@ async fn main() -> Result<()> {
                 let (hostname, ip_address) = if let Some(host_target) = &args.host {
                     let host = db::get_host_detail(&args.db, host_target)?;
                     (
-                        host.as_ref().and_then(|detail| detail.host.hostname.clone()),
+                        host.as_ref()
+                            .and_then(|detail| detail.host.hostname.clone()),
                         host.map(|detail| detail.host.ip_address),
                     )
                 } else {
@@ -469,12 +481,20 @@ async fn main() -> Result<()> {
             }
         }
         Command::Merge(args) => {
-            let sources = args.from.iter().map(|path| path.as_path()).collect::<Vec<_>>();
+            let sources = args
+                .from
+                .iter()
+                .map(|path| path.as_path())
+                .collect::<Vec<_>>();
             let summary = merge::merge_databases(&sources, &args.output)?;
             if args.json {
                 println!("{}", serde_json::to_string_pretty(&summary)?);
             } else {
-                println!("Merged {} source databases into {}", summary.source_databases, args.output.display());
+                println!(
+                    "Merged {} source databases into {}",
+                    summary.source_databases,
+                    args.output.display()
+                );
                 println!("Hosts imported: {}", summary.hosts_imported);
                 println!("Risks imported: {}", summary.risks_imported);
                 println!("Graph edges imported: {}", summary.graph_edges_imported);
@@ -553,8 +573,7 @@ async fn main() -> Result<()> {
                 .strip_prefix("key:")
                 .unwrap_or(&args.fingerprint)
                 .to_string();
-            let entry_points =
-                db::list_public_key_nodes_by_fingerprint(&args.db, &fingerprint)?;
+            let entry_points = db::list_public_key_nodes_by_fingerprint(&args.db, &fingerprint)?;
             if entry_points.is_empty() {
                 anyhow::bail!("public key {fingerprint} was not found in the analyzed inventory");
             }
@@ -845,15 +864,14 @@ async fn main() -> Result<()> {
                 baseline_name: args.baseline.clone(),
             };
             let config_policy_path = config::risk_policy_path(&app_config);
-            let policy_path = cli
-                .risk_policy
-                .as_deref()
-                .or(config_policy_path.as_deref());
+            let policy_path = cli.risk_policy.as_deref().or(config_policy_path.as_deref());
             let policy = risk::load_risk_policy(policy_path)?;
+            let show_progress = progress::resolve_show_progress(false, no_progress);
             watch::run_watch(config, move || {
                 let db_path = db_path.clone();
                 let policy = policy.clone();
                 let json = args.json;
+                let show_progress = show_progress;
                 async move {
                     db::initialize_database(&db_path)?;
                     let summary = analyzer::run_analysis(
@@ -861,6 +879,7 @@ async fn main() -> Result<()> {
                         models::AnalyzeScope::All,
                         &policy,
                         false,
+                        show_progress,
                     )?;
                     if json {
                         println!("{}", serde_json::to_string_pretty(&summary)?);
@@ -975,12 +994,13 @@ async fn main() -> Result<()> {
             }
             cli::ExportCommand::Bundle(args) => {
                 let db_path = config::resolve_database(&app_config, &args.db);
-                let output = bundle_export::export_evidence_bundle(bundle_export::EvidenceBundleOptions {
-                    db_path: &db_path,
-                    output: &args.output,
-                    host: args.host.as_deref(),
-                    include_raw_evidence: args.include_raw_evidence,
-                })?;
+                let output =
+                    bundle_export::export_evidence_bundle(bundle_export::EvidenceBundleOptions {
+                        db_path: &db_path,
+                        output: &args.output,
+                        host: args.host.as_deref(),
+                        include_raw_evidence: args.include_raw_evidence,
+                    })?;
                 println!("Wrote {}", output.display());
             }
         },
@@ -1059,9 +1079,11 @@ async fn run_workflow_once(
     app_config: &config::SshMapConfig,
     cli_risk_policy: Option<&Path>,
     args: &cli::WorkflowRunArgs,
+    show_progress: bool,
 ) -> Result<()> {
     let db_path = config::resolve_database(app_config, &args.db);
     db::initialize_database(&db_path)?;
+    let phases = progress::PhaseReporter::new("workflow", show_progress);
 
     let discover = config::discover_config(app_config);
     let runtime = config::runtime_config(app_config);
@@ -1085,20 +1107,29 @@ async fn run_workflow_once(
         max_targets,
     )?;
 
+    phases.start("discovery");
     let discovery_summary = discovery::run_discovery(
         targets,
         discover_concurrency,
         std::time::Duration::from_secs(timeout),
         &db_path,
-        args.progress,
+        show_progress,
     )
     .await?;
+    phases.done(
+        "discovery",
+        &format!(
+            "{} targets, {} SSH open",
+            discovery_summary.targets_scanned, discovery_summary.ssh_open
+        ),
+    );
     println!(
         "Discovery targets scanned: {}",
         discovery_summary.targets_scanned
     );
     println!("Discovery SSH open: {}", discovery_summary.ssh_open);
 
+    phases.start("scan");
     let scan_summary = run_scan_phase(
         app_config,
         ScanPhaseOptions {
@@ -1115,7 +1146,7 @@ async fn run_workflow_once(
             ports: args.ports.clone(),
             concurrency: args.scan_concurrency,
             timeout: args.timeout,
-            progress: args.progress,
+            progress: show_progress,
             max_targets: args.max_targets,
             transport: args.transport.clone(),
             strict_host_key: args.strict_host_key.clone(),
@@ -1126,16 +1157,33 @@ async fn run_workflow_once(
         },
     )
     .await?;
+    phases.done(
+        "scan",
+        &format!(
+            "{} succeeded, {} evidence items",
+            scan_summary.hosts_succeeded, scan_summary.evidence_items
+        ),
+    );
     println!("Scan targets scanned: {}", scan_summary.targets_scanned);
     println!("Scan hosts succeeded: {}", scan_summary.hosts_succeeded);
     println!("Scan hosts failed: {}", scan_summary.hosts_failed);
     println!("Scan evidence items: {}", scan_summary.evidence_items);
 
+    phases.start("analyze");
     let config_policy_path = config::risk_policy_path(app_config);
     let policy_path = cli_risk_policy.or(config_policy_path.as_deref());
     let policy = risk::load_risk_policy(policy_path)?;
-    let analysis_summary =
-        analyzer::run_analysis(&db_path, models::AnalyzeScope::All, &policy, false)?;
+    let analysis_summary = analyzer::run_analysis(
+        &db_path,
+        models::AnalyzeScope::All,
+        &policy,
+        false,
+        show_progress,
+    )?;
+    phases.done(
+        "analyze",
+        &format!("{} risks generated", analysis_summary.risks),
+    );
     println!("Analysis risks generated: {}", analysis_summary.risks);
     println!(
         "Analysis host aliases parsed: {}",

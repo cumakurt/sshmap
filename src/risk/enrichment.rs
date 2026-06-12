@@ -165,7 +165,6 @@ pub fn generate_server_host_key_risks(input: &RiskEnrichmentInput<'_>) -> Vec<Ge
                 });
             }
         }
-
     }
 
     for (fingerprint, host_ids) in by_fingerprint_hosts {

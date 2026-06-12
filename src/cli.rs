@@ -37,6 +37,10 @@ pub struct Cli {
     #[arg(long, global = true, value_name = "PATH")]
     pub risk_policy: Option<PathBuf>,
 
+    /// Disable live progress output (enabled by default when stderr is a terminal)
+    #[arg(long, global = true)]
+    pub no_progress: bool,
+
     #[command(subcommand)]
     pub command: Command,
 }
@@ -156,7 +160,9 @@ pub enum Command {
     Path(PathArgs),
 
     /// Find multiple directed paths between graph nodes
-    #[command(long_about = "Enumerate multiple directed access paths with optional weighted ranking.")]
+    #[command(
+        long_about = "Enumerate multiple directed access paths with optional weighted ranking."
+    )]
     Paths(PathsArgs),
 
     /// Measure lateral reach from a username
@@ -285,7 +291,7 @@ pub struct DiscoverArgs {
     #[arg(long, default_value_t = 3)]
     pub timeout: u64,
 
-    /// Print progress while discovery runs
+    /// Force live progress output (on by default when stderr is a terminal)
     #[arg(long)]
     pub progress: bool,
 
@@ -351,7 +357,7 @@ pub struct ScanArgs {
     #[arg(long, default_value_t = 10)]
     pub timeout: u64,
 
-    /// Print progress while the scan runs
+    /// Force live progress output (on by default when stderr is a terminal)
     #[arg(long)]
     pub progress: bool,
 
@@ -451,7 +457,7 @@ pub struct WorkflowRunArgs {
     #[arg(long, default_value_t = 10)]
     pub timeout: u64,
 
-    /// Print progress while phases run
+    /// Force live progress output (on by default when stderr is a terminal)
     #[arg(long)]
     pub progress: bool,
 

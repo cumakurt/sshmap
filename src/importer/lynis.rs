@@ -3,7 +3,14 @@ use crate::models::ImportSummary;
 use anyhow::{Context, Result};
 use std::path::Path;
 
-pub fn import_lynis_report(path: &Path, db_path: &Path, host: Option<&str>) -> Result<ImportSummary> {
+pub fn import_lynis_report(
+    path: &Path,
+    db_path: &Path,
+    host: Option<&str>,
+) -> Result<ImportSummary> {
+    if let Some(host) = host {
+        crate::security::validate_import_host_identifier(host)?;
+    }
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read Lynis report {}", path.display()))?;
     let host_id = host

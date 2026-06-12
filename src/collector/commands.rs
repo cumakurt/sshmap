@@ -210,7 +210,10 @@ fn is_read_only_command(command: &str) -> Result<(), &'static str> {
     if trimmed.contains('<') {
         return Err("shell input redirection is not allowed");
     }
-    if trimmed.contains('>') && !trimmed.contains("2>/dev/null") && !trimmed.contains("2> /dev/null") {
+    if trimmed.contains('>')
+        && !trimmed.contains("2>/dev/null")
+        && !trimmed.contains("2> /dev/null")
+    {
         return Err("shell output redirection is not allowed");
     }
     if trimmed.contains("$(`") || trimmed.contains("${") {

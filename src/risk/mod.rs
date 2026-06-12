@@ -738,7 +738,8 @@ fn generate_pam_risks(analysis: &NormalizedAnalysis) -> Vec<GeneratedRisk> {
                 confidence: "HIGH".to_string(),
                 title: "PAM stack allows null passwords".to_string(),
                 description: "A PAM module is configured with nullok.".to_string(),
-                impact: "Accounts with empty passwords may authenticate when nullok is in effect.".to_string(),
+                impact: "Accounts with empty passwords may authenticate when nullok is in effect."
+                    .to_string(),
                 evidence: format!(
                     "{}:{} {} {} {}",
                     entry.source_file,
@@ -747,10 +748,13 @@ fn generate_pam_risks(analysis: &NormalizedAnalysis) -> Vec<GeneratedRisk> {
                     entry.module_type,
                     entry.module_path
                 ),
-                recommendation: "Remove nullok from PAM modules and enforce password or key-only SSH access.".to_string(),
+                recommendation:
+                    "Remove nullok from PAM modules and enforce password or key-only SSH access."
+                        .to_string(),
             });
         }
-        if entry.service == "sshd" && module.contains("pam_unix.so") && !module.contains("pam_sss") {
+        if entry.service == "sshd" && module.contains("pam_unix.so") && !module.contains("pam_sss")
+        {
             risks.push(GeneratedRisk {
                 host_id: Some(entry.host_id),
                 username: None,
@@ -801,7 +805,9 @@ fn generate_match_block_risks(analysis: &NormalizedAnalysis) -> Vec<GeneratedRis
         for (key, value) in &block.directives {
             let key_lower = key.to_ascii_lowercase();
             let value_lower = value.to_ascii_lowercase();
-            if key_lower == "permitrootlogin" && (value_lower == "yes" || value_lower == "prohibit-password") {
+            if key_lower == "permitrootlogin"
+                && (value_lower == "yes" || value_lower == "prohibit-password")
+            {
                 risks.push(GeneratedRisk {
                     host_id: Some(block.host_id),
                     username: None,
@@ -851,16 +857,18 @@ fn generate_match_block_risks(analysis: &NormalizedAnalysis) -> Vec<GeneratedRis
 }
 
 fn generate_sudo_escalation_path_risks(analysis: &NormalizedAnalysis) -> Vec<GeneratedRisk> {
-    const ESCALATION_COMMANDS: &[&str] = &["/bin/su", "/usr/bin/sudo", "/bin/bash", "/usr/bin/bash"];
+    const ESCALATION_COMMANDS: &[&str] =
+        &["/bin/su", "/usr/bin/sudo", "/bin/bash", "/usr/bin/bash"];
     analysis
         .sudo_rules
         .iter()
         .filter(|rule| {
             rule.nopasswd
-                && rule
-                    .command
-                    .as_deref()
-                    .is_some_and(|command| ESCALATION_COMMANDS.iter().any(|needle| command.contains(needle)))
+                && rule.command.as_deref().is_some_and(|command| {
+                    ESCALATION_COMMANDS
+                        .iter()
+                        .any(|needle| command.contains(needle))
+                })
         })
         .map(|rule| GeneratedRisk {
             host_id: Some(rule.host_id),
@@ -871,7 +879,8 @@ fn generate_sudo_escalation_path_risks(analysis: &NormalizedAnalysis) -> Vec<Gen
             score: 92,
             confidence: "HIGH".to_string(),
             title: "Passwordless sudo provides a short path to root".to_string(),
-            description: "A sudoers rule grants NOPASSWD access to a shell escalation command.".to_string(),
+            description: "A sudoers rule grants NOPASSWD access to a shell escalation command."
+                .to_string(),
             impact: "SSH access to the subject can become immediate root access.".to_string(),
             evidence: format!(
                 "{}:{} grants {} NOPASSWD:{}",

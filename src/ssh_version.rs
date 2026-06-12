@@ -62,9 +62,7 @@ pub fn known_cves_for_version(version: &OpenSshVersion) -> Vec<KnownCveFinding> 
                 title: rule.title.to_string(),
                 affected_through: format!(
                     "{}.{}.{}",
-                    rule.affected_through.0,
-                    rule.affected_through.1,
-                    rule.affected_through.2
+                    rule.affected_through.0, rule.affected_through.1, rule.affected_through.2
                 ),
                 recommendation: rule.recommendation.to_string(),
             });
@@ -143,6 +141,10 @@ mod tests {
     fn flags_known_cves_for_old_versions() {
         let version = parse_openssh_version_token("7.4p1").expect("version");
         let findings = known_cves_for_version(&version);
-        assert!(findings.iter().any(|finding| finding.cve_id == "CVE-2018-15473"));
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.cve_id == "CVE-2018-15473")
+        );
     }
 }

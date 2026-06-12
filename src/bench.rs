@@ -120,7 +120,8 @@ pub fn run_benchmarks(request: BenchmarkRequest) -> Result<BenchmarkReport> {
     let mut timings = Vec::new();
 
     timings.push(time_iterations("analyze", iterations, || {
-        analyzer::run_analysis(&request.db_path, AnalyzeScope::All, &policy, false).map(|_| ())
+        analyzer::run_analysis(&request.db_path, AnalyzeScope::All, &policy, false, false)
+            .map(|_| ())
     })?);
 
     timings.push(time_iterations("report_build", iterations, || {
@@ -135,7 +136,10 @@ pub fn run_benchmarks(request: BenchmarkRequest) -> Result<BenchmarkReport> {
     timings.push(time_iterations(
         "incremental_analyze_skip",
         iterations,
-        || analyzer::run_analysis(&request.db_path, AnalyzeScope::All, &policy, true).map(|_| ()),
+        || {
+            analyzer::run_analysis(&request.db_path, AnalyzeScope::All, &policy, true, false)
+                .map(|_| ())
+        },
     )?);
 
     Ok(BenchmarkReport {

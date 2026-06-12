@@ -61,12 +61,7 @@ pub fn sudo_path_to_root_score(edges: &[GraphEdgeRecord], username: &str) -> Opt
     if path.edges.is_empty() {
         return None;
     }
-    Some(
-        path.edges
-            .iter()
-            .map(edge_traversal_weight)
-            .sum::<i64>(),
-    )
+    Some(path.edges.iter().map(edge_traversal_weight).sum::<i64>())
 }
 
 pub fn find_weighted_path(
@@ -633,12 +628,8 @@ pub fn format_key_blast_radius_text(record: &KeyCompromiseBlastRadiusRecord) -> 
     .expect("writing to String cannot fail");
     writeln!(output, "Reachable hosts: {}", record.host_count)
         .expect("writing to String cannot fail");
-    writeln!(
-        output,
-        "Reachable users: {}",
-        record.reachable_users.len()
-    )
-    .expect("writing to String cannot fail");
+    writeln!(output, "Reachable users: {}", record.reachable_users.len())
+        .expect("writing to String cannot fail");
     writeln!(
         output,
         "Passwordless sudo hosts: {}",

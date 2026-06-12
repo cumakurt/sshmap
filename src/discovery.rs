@@ -53,8 +53,9 @@ pub async fn run_discovery(
         .map(|target| {
             let progress = std::sync::Arc::clone(&progress);
             async move {
+                let detail = format!("{}:{}", target.host, target.port);
                 let result = scan_target(target, timeout_duration).await;
-                progress.tick();
+                progress.tick_with_detail(Some(&detail));
                 result
             }
         })
@@ -75,7 +76,8 @@ async fn scan_target(target: TargetEndpoint, timeout_duration: Duration) -> Disc
                     .as_deref()
                     .map(|value| value.starts_with("SSH-"))
                     .unwrap_or(true);
-                let openssh_version = parse_openssh_banner(banner.as_deref()).map(|version| version.raw);
+                let openssh_version =
+                    parse_openssh_banner(banner.as_deref()).map(|version| version.raw);
                 let server_keys = if ssh_open {
                     scan_server_host_keys(&target.host, target.port, timeout_duration).await
                 } else {

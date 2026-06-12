@@ -27,9 +27,11 @@ pub fn run_checks(
         },
         CheckResult {
             label: "scan transport native".to_string(),
-            status:
-                "ok (in-process russh client, requires --key, default strict-host-key accept-new)"
-                    .to_string(),
+            status: native_transport_status(),
+        },
+        CheckResult {
+            label: "scan command manifest".to_string(),
+            status: scan_command_manifest_status(),
         },
         openssh_connection_reuse_check(),
         control_socket_directory_check(),
@@ -246,9 +248,21 @@ pub fn parse_openssh_multiplexing_dump(output: &str) -> bool {
 
 fn openssh_transport_status() -> String {
     if binary_exists("ssh") {
-        "ok".to_string()
+        "ok (default; recommended for production scans)".to_string()
     } else {
         "missing (required for --transport openssh)".to_string()
+    }
+}
+
+fn native_transport_status() -> String {
+    "ok (in-process russh via --transport native; requires --key; see SECURITY.md for dependency advisory)"
+        .to_string()
+}
+
+fn scan_command_manifest_status() -> String {
+    match crate::collector::commands::validate_read_only_command_manifest() {
+        Ok(()) => "ok".to_string(),
+        Err(error) => format!("invalid ({error})"),
     }
 }
 
@@ -449,6 +463,11 @@ mod tests {
     fn rejects_disabled_control_master() {
         let dump = "controlmaster false\ncontrolpath /tmp/ssh-%r@%h:%p\n";
         assert!(!parse_openssh_multiplexing_dump(dump));
+    }
+
+    #[test]
+    fn scan_command_manifest_is_valid() {
+        assert_eq!(scan_command_manifest_status(), "ok");
     }
 
     #[test]

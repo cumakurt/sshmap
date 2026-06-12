@@ -4,7 +4,10 @@ use crate::importer::store_hosts;
 use crate::models::{ImportedHost, RawEvidenceRecord};
 use anyhow::{Context, Result, bail};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+const MAX_BUNDLE_DEPTH: usize = 32;
+const MAX_BUNDLE_FILES: usize = 10_000;
 
 pub fn import_file_evidence(
     source: &str,
@@ -14,6 +17,7 @@ pub fn import_file_evidence(
     username: Option<&str>,
     db_path: &Path,
 ) -> Result<crate::models::ImportSummary> {
+    crate::security::validate_import_host_identifier(host)?;
     let content = fs::read_to_string(path)
         .with_context(|| format!("failed to read import file {}", path.display()))?;
     let (content, redacted) = redact_sensitive_content(&content);
@@ -24,6 +28,8 @@ pub fn import_file_evidence(
     let mut import_content = content;
     if evidence_type == "authorized_keys" {
         let username = username.unwrap_or("unknown");
+        crate::transport::auth::validate_ssh_username(username)
+            .map_err(|error| anyhow::anyhow!(error))?;
         let source_file = authorized_keys_source_path(username);
         import_content = format!("\n--- SSHMAP_FILE:{source_file} ---\n{import_content}");
     }
@@ -55,50 +61,53 @@ pub fn import_json_report(path: &Path, db_path: &Path) -> Result<crate::models::
         bail!("json report does not contain a hosts array");
     };
 
-    let imported_hosts = hosts
-        .iter()
-        .filter_map(|host| {
-            let ip_address = host
-                .get("ip_address")
+    let mut imported_hosts = Vec::new();
+    for host in hosts {
+        let Some(ip_address) = host
+            .get("ip_address")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            continue;
+        };
+        crate::security::validate_import_host_identifier(ip_address)?;
+        imported_hosts.push(ImportedHost {
+            hostname: host
+                .get("hostname")
                 .and_then(|value| value.as_str())
-                .map(str::to_string)?;
-            Some(ImportedHost {
-                hostname: host
-                    .get("hostname")
-                    .and_then(|value| value.as_str())
-                    .map(str::to_string),
-                fqdn: host
-                    .get("fqdn")
-                    .and_then(|value| value.as_str())
-                    .map(str::to_string),
-                ip_address,
-                port: host
-                    .get("port")
-                    .and_then(|value| value.as_i64())
-                    .unwrap_or(22),
-                os_family: host
-                    .get("os_family")
-                    .and_then(|value| value.as_str())
-                    .map(str::to_string),
-                os_version: host
-                    .get("os_version")
-                    .and_then(|value| value.as_str())
-                    .map(str::to_string),
-                environment: host
-                    .get("environment")
-                    .and_then(|value| value.as_str())
-                    .map(str::to_string),
-                criticality: host
-                    .get("criticality")
-                    .and_then(|value| value.as_str())
-                    .map(str::to_string),
-                ssh_open: host
-                    .get("ssh_open")
-                    .and_then(|value| value.as_bool())
-                    .unwrap_or(true),
-            })
-        })
-        .collect::<Vec<_>>();
+                .map(str::to_string),
+            fqdn: host
+                .get("fqdn")
+                .and_then(|value| value.as_str())
+                .map(str::to_string),
+            ip_address: ip_address.to_string(),
+            port: host
+                .get("port")
+                .and_then(|value| value.as_i64())
+                .unwrap_or(22),
+            os_family: host
+                .get("os_family")
+                .and_then(|value| value.as_str())
+                .map(str::to_string),
+            os_version: host
+                .get("os_version")
+                .and_then(|value| value.as_str())
+                .map(str::to_string),
+            environment: host
+                .get("environment")
+                .and_then(|value| value.as_str())
+                .map(str::to_string),
+            criticality: host
+                .get("criticality")
+                .and_then(|value| value.as_str())
+                .map(str::to_string),
+            ssh_open: host
+                .get("ssh_open")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(true),
+        });
+    }
 
     store_hosts(db_path, "json", &imported_hosts)
 }
@@ -129,7 +138,7 @@ pub fn import_bundle(
     }
 
     let mut imported = 0_usize;
-    for path in list_files_recursive(dir)? {
+    for path in list_files_recursive(dir, 0)? {
         match import_auto(&path, host, username, db_path) {
             Ok(summary) => imported += summary.imported,
             Err(error) if error.to_string().contains("could not auto-detect parser") => {}
@@ -160,13 +169,16 @@ fn import_detected_file(
             kind.evidence_type()
         )
     })?;
+    crate::security::validate_import_host_identifier(host)?;
 
     let username = if kind.requires_user() {
-        username
+        let username = username
             .map(str::to_string)
             .or_else(|| infer_username_from_path(path))
-            .ok_or_else(|| anyhow::anyhow!("--user is required for authorized_keys evidence"))?
-            .into()
+            .ok_or_else(|| anyhow::anyhow!("--user is required for authorized_keys evidence"))?;
+        crate::transport::auth::validate_ssh_username(&username)
+            .map_err(|error| anyhow::anyhow!(error))?;
+        Some(username)
     } else {
         None
     };
@@ -185,15 +197,25 @@ fn infer_username_from_path(path: &Path) -> Option<String> {
     crate::parser::authorized_keys::username_from_authorized_keys_path(&path.to_string_lossy())
 }
 
-fn list_files_recursive(dir: &Path) -> Result<Vec<std::path::PathBuf>> {
+fn list_files_recursive(dir: &Path, depth: usize) -> Result<Vec<PathBuf>> {
+    if depth > MAX_BUNDLE_DEPTH {
+        bail!(
+            "bundle directory exceeds maximum depth of {MAX_BUNDLE_DEPTH}: {}",
+            dir.display()
+        );
+    }
+
     let mut files = Vec::new();
     for entry in fs::read_dir(dir).with_context(|| format!("failed to read {}", dir.display()))? {
         let entry = entry?;
         let path = entry.path();
         if path.is_dir() {
-            files.extend(list_files_recursive(&path)?);
+            files.extend(list_files_recursive(&path, depth + 1)?);
         } else if path.is_file() {
             files.push(path);
+        }
+        if files.len() > MAX_BUNDLE_FILES {
+            bail!("bundle directory exceeds maximum file count of {MAX_BUNDLE_FILES}");
         }
     }
     Ok(files)
@@ -225,6 +247,19 @@ mod import_tests {
             authorized_keys_source_path("deploy"),
             "/home/deploy/.ssh/authorized_keys"
         );
+    }
+
+    #[test]
+    fn rejects_invalid_host_identifier_on_auto_import() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let sshd_path = temp_dir.path().join("sshd_config");
+        std::fs::write(&sshd_path, "PermitRootLogin no\n").expect("sshd_config");
+        let db_path = temp_dir.path().join("invalid-host.db");
+        crate::db::initialize_database(&db_path).expect("db");
+
+        let error =
+            import_auto(&sshd_path, Some("bad host"), None, &db_path).expect_err("invalid host");
+        assert!(error.to_string().contains("invalid host identifier"));
     }
 
     #[test]

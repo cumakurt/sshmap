@@ -25,12 +25,9 @@ where
     }
 }
 
-pub async fn notify_webhook(
-    url: &str,
-    db_path: &Path,
-    baseline_name: Option<&str>,
-) -> Result<()> {
-    let summary = crate::server::build_api_summary(db_path)?;
+pub async fn notify_webhook(url: &str, db_path: &Path, baseline_name: Option<&str>) -> Result<()> {
+    let read_pool = crate::db::ReadOnlyPool::open(db_path)?;
+    let summary = crate::server::build_api_summary(&read_pool)?;
     let (new_risks, resolved_risks) = if let Some(name) = baseline_name {
         let diff = crate::db::diff_baselines(db_path, name, "latest")?;
         (diff.new_risks.len(), diff.resolved_risks.len())
@@ -40,7 +37,7 @@ pub async fn notify_webhook(
 
     let payload = build_alert_payload(
         "sshmap.watch.completed",
-        &db_path.display().to_string(),
+        &crate::security::webhook_database_label(db_path),
         summary.critical_risks,
         summary.high_risks,
         new_risks,

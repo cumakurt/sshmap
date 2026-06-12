@@ -20,7 +20,10 @@ impl HostContext {
                 multiplier += 0.35;
             } else if matches_environment(&normalized, &["staging", "stage", "uat", "preprod"]) {
                 multiplier += 0.15;
-            } else if matches_environment(&normalized, &["dev", "development", "lab", "test", "sandbox"]) {
+            } else if matches_environment(
+                &normalized,
+                &["dev", "development", "lab", "test", "sandbox"],
+            ) {
                 multiplier -= 0.25;
             }
         }
@@ -122,7 +125,10 @@ mod tests {
         };
 
         assert!(context.context_multiplier() > 1.2);
-        assert_eq!(adjust_severity("HIGH", context.context_multiplier()), "CRITICAL");
+        assert_eq!(
+            adjust_severity("HIGH", context.context_multiplier()),
+            "CRITICAL"
+        );
     }
 
     #[test]
@@ -137,6 +143,9 @@ mod tests {
         };
 
         assert!(context.context_multiplier() < 1.0);
-        assert_eq!(adjust_severity("HIGH", context.context_multiplier()), "MEDIUM");
+        assert_eq!(
+            adjust_severity("HIGH", context.context_multiplier()),
+            "MEDIUM"
+        );
     }
 }

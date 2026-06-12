@@ -97,9 +97,7 @@ pub fn build_evidence_drift_report(
     }
 }
 
-fn evidence_by_type(
-    evidence: &[(String, String, String)],
-) -> BTreeMap<String, (String, String)> {
+fn evidence_by_type(evidence: &[(String, String, String)]) -> BTreeMap<String, (String, String)> {
     let mut grouped = BTreeMap::<String, Vec<String>>::new();
     for (evidence_type, _content_hash, content) in evidence {
         if !DRIFT_EVIDENCE_TYPES.contains(&evidence_type.as_str()) {
@@ -144,7 +142,8 @@ mod tests {
 
     #[test]
     fn detects_line_changes() {
-        let (added, removed) = diff_evidence_content("PermitRootLogin yes\n", "PermitRootLogin no\n");
+        let (added, removed) =
+            diff_evidence_content("PermitRootLogin yes\n", "PermitRootLogin no\n");
         assert_eq!(added, 1);
         assert_eq!(removed, 1);
     }

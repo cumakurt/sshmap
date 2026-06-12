@@ -26,7 +26,9 @@ pub fn export_remediation(risks: &[RiskRecord], format: RemediationExportFormat)
 }
 
 fn render_ansible_playbook(risks: &[RiskRecord]) -> String {
-    let mut output = String::from("---\n- name: SSHMap remediation playbook\n  hosts: all\n  become: true\n  tasks:\n");
+    let mut output = String::from(
+        "---\n- name: SSHMap remediation playbook\n  hosts: all\n  become: true\n  tasks:\n",
+    );
     let mut seen = std::collections::BTreeSet::new();
 
     for risk in risks {
@@ -40,7 +42,9 @@ fn render_ansible_playbook(risks: &[RiskRecord]) -> String {
             writeln!(
                 output,
                 "    - name: {} ({})\n{}\n",
-                remediation.title, risk.risk_code, indent_yaml(task, 6)
+                remediation.title,
+                risk.risk_code,
+                indent_yaml(task, 6)
             )
             .expect("writing to String cannot fail");
         } else {
@@ -61,7 +65,8 @@ fn render_ansible_playbook(risks: &[RiskRecord]) -> String {
 }
 
 fn render_shell_script(risks: &[RiskRecord]) -> String {
-    let mut output = String::from("#!/bin/sh\n# SSHMap remediation script - review before running\nset -eu\n\n");
+    let mut output =
+        String::from("#!/bin/sh\n# SSHMap remediation script - review before running\nset -eu\n\n");
     let mut seen = std::collections::BTreeSet::new();
 
     for risk in risks {

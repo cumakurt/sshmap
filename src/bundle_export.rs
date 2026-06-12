@@ -3,7 +3,7 @@ use anyhow::{Context, Result};
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use zip::{write::SimpleFileOptions, ZipWriter};
+use zip::{ZipWriter, write::SimpleFileOptions};
 
 pub struct EvidenceBundleOptions<'a> {
     pub db_path: &'a Path,
@@ -43,7 +43,8 @@ pub fn export_evidence_bundle(options: EvidenceBundleOptions<'_>) -> Result<Path
     let file = File::create(options.output)
         .with_context(|| format!("failed to create {}", options.output.display()))?;
     let mut zip = ZipWriter::new(file);
-    let options_zip = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    let options_zip =
+        SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
     zip.start_file("manifest.json", options_zip)?;
     zip.write_all(serde_json::to_string_pretty(&manifest)?.as_bytes())?;

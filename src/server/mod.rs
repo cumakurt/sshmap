@@ -8,6 +8,10 @@ use axum::{
 };
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use tower_governor::GovernorLayer;
+use tower_governor::governor::GovernorConfigBuilder;
+use tower_governor::key_extractor::PeerIpKeyExtractor;
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 
@@ -43,6 +47,7 @@ pub struct ResolvedApiTokens {
 #[derive(Clone)]
 pub struct AppState {
     pub db_path: PathBuf,
+    pub read_pool: crate::db::ReadOnlyPool,
     pub read_token: Option<String>,
     pub write_token: Option<String>,
     pub allow_write_api: bool,
@@ -78,14 +83,16 @@ pub async fn run_server(config: ServerConfig) -> Result<()> {
         );
     }
 
+    let read_pool = crate::db::ReadOnlyPool::open(&config.db_path)?;
     let state = AppState {
         db_path: config.db_path.clone(),
+        read_pool,
         read_token: config.read_token.clone(),
         write_token: config.write_token.clone(),
         allow_write_api: config.allow_write_api,
     };
 
-    let app = build_app(state, config.dashboard_dir.clone());
+    let app = build_rate_limited_app(state, config.dashboard_dir.clone());
 
     let listener = tokio::net::TcpListener::bind(config.listen)
         .await
@@ -110,9 +117,12 @@ pub async fn run_server(config: ServerConfig) -> Result<()> {
         println!("Write API endpoints: enabled");
     }
 
-    axum::serve(listener, app)
-        .await
-        .context("sshmap server terminated with error")?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
+    .context("sshmap server terminated with error")?;
 
     Ok(())
 }
@@ -145,7 +155,10 @@ pub fn resolve_api_tokens(
     let mut read = None;
     let mut write = None;
 
-    for parsed in [legacy_parsed, read_parsed, write_parsed].into_iter().flatten() {
+    for parsed in [legacy_parsed, read_parsed, write_parsed]
+        .into_iter()
+        .flatten()
+    {
         match parsed.1 {
             "read" => read = Some(parsed.0),
             "write" => write = Some(parsed.0),
@@ -238,6 +251,19 @@ pub fn build_app(state: AppState, dashboard_dir: Option<PathBuf>) -> Router {
     app.layer(TraceLayer::new_for_http()).with_state(state)
 }
 
+pub fn build_rate_limited_app(state: AppState, dashboard_dir: Option<PathBuf>) -> Router {
+    let rate_limit = Arc::new(
+        GovernorConfigBuilder::default()
+            .per_second(20)
+            .burst_size(40)
+            .key_extractor(PeerIpKeyExtractor)
+            .finish()
+            .expect("rate limiter configuration"),
+    );
+
+    build_app(state, dashboard_dir).layer(GovernorLayer::new(rate_limit))
+}
+
 fn validate_dashboard_dir(path: &Path) -> Result<()> {
     if !path.is_dir() {
         bail!("dashboard directory not found: {}", path.display());
@@ -251,12 +277,14 @@ fn validate_dashboard_dir(path: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn build_api_summary(db_path: &std::path::Path) -> Result<ApiSummary> {
-    let stats = crate::db::load_database_stats_read_only(db_path)?;
-    let hosts = crate::db::list_hosts_read_only(db_path, 10_000)?;
-    let reused_keys = crate::db::list_keys_read_only(db_path, 10_000, true)?;
-    let (critical_risks, high_risks) = crate::db::count_open_risks_by_severity_read_only(db_path)?;
-    let metrics = crate::db::load_operations_metrics(db_path)?;
+pub fn build_api_summary(
+    source: &(impl crate::db::ReadOnlyDbAccess + ?Sized),
+) -> Result<ApiSummary> {
+    let stats = crate::db::load_database_stats_read_only(source)?;
+    let hosts = crate::db::list_hosts_read_only(source, 10_000)?;
+    let reused_keys = crate::db::list_keys_read_only(source, 10_000, true)?;
+    let (critical_risks, high_risks) = crate::db::count_open_risks_by_severity_read_only(source)?;
+    let metrics = crate::db::load_operations_metrics_read_only(source)?;
 
     Ok(ApiSummary {
         ssh_open_hosts: hosts.iter().filter(|host| host.ssh_open).count(),
@@ -285,7 +313,13 @@ mod tests {
     fn seed_api_test_database(path: &Path) -> anyhow::Result<()> {
         crate::db::initialize_database(path)?;
         seed_benchmark_database(path, 5)?;
-        analyzer::run_analysis(path, AnalyzeScope::All, &RiskPolicy::default(), false)?;
+        analyzer::run_analysis(
+            path,
+            AnalyzeScope::All,
+            &RiskPolicy::default(),
+            false,
+            false,
+        )?;
         Ok(())
     }
 
@@ -331,9 +365,11 @@ mod tests {
         let db_path = temp_dir.path().join("api-test.db");
         seed_api_test_database(&db_path).expect("seed database");
 
+        let read_pool = crate::db::ReadOnlyPool::open(&db_path).expect("read pool");
         let app = build_app(
             AppState {
                 db_path: db_path.clone(),
+                read_pool,
                 read_token: Some("secret-token".to_string()),
                 write_token: Some("secret-token".to_string()),
                 allow_write_api: false,

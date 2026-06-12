@@ -12,13 +12,17 @@ pub fn run_analysis(
     scope: AnalyzeScope,
     policy: &RiskPolicy,
     incremental: bool,
+    show_progress: bool,
 ) -> Result<AnalysisSummary> {
+    let phases = crate::progress::PhaseReporter::new("analyze", show_progress);
     if incremental
         && matches!(scope, AnalyzeScope::Graph)
         && let Some(since) = db::get_last_analysis_timestamp(db_path)?
     {
+        phases.start("incremental check");
         let new_items = db::count_new_raw_evidence_since(db_path, &since)?;
         if new_items == 0 {
+            phases.done("incremental check", "no new evidence, skipping");
             let stats = db::load_database_stats(db_path)?;
             return Ok(AnalysisSummary {
                 skipped: true,
@@ -35,45 +39,84 @@ pub fn run_analysis(
                 risks: stats.risks,
             });
         }
-        eprintln!("Incremental analysis: {new_items} new evidence items since last run");
+        phases.done(
+            "incremental check",
+            &format!("{new_items} new evidence items since last run"),
+        );
     }
 
+    phases.start("loading evidence");
     let raw_evidence = db::load_raw_evidence_for_analysis(db_path)?;
+    phases.done("loading evidence", &format!("{} items", raw_evidence.len()));
+
+    phases.start("parsing evidence");
     let analysis = build_normalized_analysis(&raw_evidence);
+    phases.done(
+        "parsing evidence",
+        &format!(
+            "{} users, {} authorized keys",
+            analysis.users.len(),
+            analysis.authorized_keys.len()
+        ),
+    );
 
     let summary = match scope {
         AnalyzeScope::Graph => {
+            phases.start("persisting inventory");
             db::replace_normalized_analysis(db_path, &analysis)?;
+            phases.done("persisting inventory", "normalized tables updated");
+
+            phases.start("rebuilding graph");
             db::update_hostnames_from_evidence(db_path)?;
             db::rebuild_graph_edges(db_path)?;
             db::refresh_data_quality_findings(db_path)?;
-            analysis.summary(raw_evidence.len(), db::load_database_stats(db_path)?.risks)
+            let risks = db::load_database_stats(db_path)?.risks;
+            phases.done(
+                "rebuilding graph",
+                &format!("{risks} open risks in database"),
+            );
+            analysis.summary(raw_evidence.len(), risks)
         }
         AnalyzeScope::Risks => {
+            phases.start("generating risks");
             let mut risks = generate_risks_with_db_context(db_path, &analysis, policy)?;
             let exceptions = db::list_risk_exceptions(db_path)?;
             risks = exceptions::apply_exceptions(risks, &exceptions);
             let summary = analysis.summary(raw_evidence.len(), risks.len());
+            phases.done("generating risks", &format!("{} findings", risks.len()));
+
+            phases.start("persisting risks");
             db::replace_risks(db_path, &risks)?;
             persist_hardening_scores(db_path)?;
+            phases.done("persisting risks", "database updated");
             summary
         }
         AnalyzeScope::All => {
+            phases.start("generating risks");
             let mut risks = generate_risks_with_db_context(db_path, &analysis, policy)?;
             let exceptions = db::list_risk_exceptions(db_path)?;
             risks = exceptions::apply_exceptions(risks, &exceptions);
             let summary = analysis.summary(raw_evidence.len(), risks.len());
+            phases.done("generating risks", &format!("{} findings", risks.len()));
+
+            phases.start("persisting inventory");
             db::replace_normalized_analysis(db_path, &analysis)?;
             db::replace_risks(db_path, &risks)?;
             db::update_hostnames_from_evidence(db_path)?;
             db::rebuild_graph_edges(db_path)?;
             db::refresh_data_quality_findings(db_path)?;
             persist_hardening_scores(db_path)?;
+            phases.done(
+                "persisting inventory",
+                "inventory, risks, and graph updated",
+            );
             summary
         }
     };
 
+    phases.start("finalizing");
     db::record_analysis_finished(db_path)?;
+    phases.done("finalizing", "analysis timestamp recorded");
     Ok(summary)
 }
 
@@ -365,8 +408,14 @@ mod tests {
         db::initialize_database(&db_path).expect("initialize database");
         db::record_analysis_finished(&db_path).expect("record analysis finished");
 
-        let summary = run_analysis(&db_path, AnalyzeScope::Graph, &RiskPolicy::default(), true)
-            .expect("incremental analysis");
+        let summary = run_analysis(
+            &db_path,
+            AnalyzeScope::Graph,
+            &RiskPolicy::default(),
+            true,
+            false,
+        )
+        .expect("incremental analysis");
 
         assert!(summary.skipped);
     }

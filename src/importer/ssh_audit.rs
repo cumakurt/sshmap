@@ -21,7 +21,14 @@ struct SshAuditFinding {
     description: Option<String>,
 }
 
-pub fn import_ssh_audit_report(path: &Path, db_path: &Path, host: Option<&str>) -> Result<ImportSummary> {
+pub fn import_ssh_audit_report(
+    path: &Path,
+    db_path: &Path,
+    host: Option<&str>,
+) -> Result<ImportSummary> {
+    if let Some(host) = host {
+        crate::security::validate_import_host_identifier(host)?;
+    }
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read ssh-audit report {}", path.display()))?;
     let report: SshAuditReport = serde_json::from_str(&content)?;
@@ -40,7 +47,9 @@ pub fn import_ssh_audit_report(path: &Path, db_path: &Path, host: Option<&str>) 
             db_path,
             host_id,
             "ssh-audit",
-            &finding.code.unwrap_or_else(|| "SSH_AUDIT_FINDING".to_string()),
+            &finding
+                .code
+                .unwrap_or_else(|| "SSH_AUDIT_FINDING".to_string()),
             &finding.level.unwrap_or_else(|| "MEDIUM".to_string()),
             &title,
             finding.description.as_deref(),

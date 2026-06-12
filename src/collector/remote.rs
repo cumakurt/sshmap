@@ -58,9 +58,10 @@ pub async fn run_remote_scan(request: RemoteScanRequest) -> Result<RemoteScanSum
                     port: target.port,
                     username,
                 };
+                let detail = format!("{}:{}", target.host, target.port);
                 let result =
                     scan_single_host(target, ssh_target, &transport, &commands, use_sudo).await;
-                progress.tick();
+                progress.tick_with_detail(Some(&detail));
                 result
             }
         })

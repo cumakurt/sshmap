@@ -55,12 +55,20 @@ pub async fn write_auth_middleware(
     next: Next,
 ) -> Response {
     if !authorize_request(&state, &request, true) {
-        return (StatusCode::UNAUTHORIZED, "invalid or missing write API token").into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            "invalid or missing write API token",
+        )
+            .into_response();
     }
     next.run(request).await
 }
 
-fn authorize_request(state: &AppState, request: &Request<axum::body::Body>, require_write: bool) -> bool {
+fn authorize_request(
+    state: &AppState,
+    request: &Request<axum::body::Body>,
+    require_write: bool,
+) -> bool {
     if state.read_token.is_none() && state.write_token.is_none() {
         return true;
     }
@@ -90,7 +98,7 @@ fn authorize_request(state: &AppState, request: &Request<axum::body::Body>, requ
 pub async fn summary(
     State(state): State<AppState>,
 ) -> Result<Json<crate::models::ApiSummary>, ApiError> {
-    Ok(Json(build_api_summary(&state.db_path)?))
+    Ok(Json(build_api_summary(&state.read_pool)?))
 }
 
 pub async fn list_hosts(
@@ -102,7 +110,7 @@ pub async fn list_hosts(
     let search = optional_param(query.q, "q", API_FILTER_PARAM_MAX_BYTES)?;
 
     Ok(Json(crate::db::list_hosts_read_only_with_query(
-        &state.db_path,
+        &state.read_pool,
         &crate::models::HostQuery {
             ssh_open: query.ssh_open,
             source,
@@ -125,7 +133,7 @@ pub async fn get_host(
     Path(id): Path<String>,
 ) -> Result<Json<crate::models::HostDetailRecord>, ApiError> {
     let id = required_param(&id, "host id", API_REF_PARAM_MAX_BYTES)?;
-    let Some(host) = crate::db::get_host_detail_read_only(&state.db_path, id)? else {
+    let Some(host) = crate::db::get_host_detail_read_only(&state.read_pool, id)? else {
         return Err(ApiError::not_found("host not found"));
     };
     Ok(Json(host))
@@ -138,7 +146,7 @@ pub async fn list_users(
     let search = optional_param(query.q, "q", API_FILTER_PARAM_MAX_BYTES)?;
 
     Ok(Json(crate::db::list_user_summaries_read_only_with_query(
-        &state.db_path,
+        &state.read_pool,
         &crate::models::UserQuery {
             search,
             min_hosts: query.min_hosts,
@@ -161,7 +169,7 @@ pub async fn get_user(
     Path(username): Path<String>,
 ) -> Result<Json<crate::models::UserDetailRecord>, ApiError> {
     let username = required_param(&username, "username", API_FILTER_PARAM_MAX_BYTES)?;
-    let Some(user) = crate::db::get_user_detail_read_only(&state.db_path, username)? else {
+    let Some(user) = crate::db::get_user_detail_read_only(&state.read_pool, username)? else {
         return Err(ApiError::not_found("user not found"));
     };
     Ok(Json(user))
@@ -171,7 +179,7 @@ pub async fn list_keys(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<crate::models::KeySummaryRecord>>, ApiError> {
     Ok(Json(crate::db::list_keys_read_only(
-        &state.db_path,
+        &state.read_pool,
         API_LIMIT,
         false,
     )?))
@@ -181,7 +189,7 @@ pub async fn list_reused_keys(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<crate::models::KeySummaryRecord>>, ApiError> {
     Ok(Json(crate::db::list_keys_read_only(
-        &state.db_path,
+        &state.read_pool,
         API_LIMIT,
         true,
     )?))
@@ -192,7 +200,7 @@ pub async fn get_key(
     Path(target): Path<String>,
 ) -> Result<Json<crate::models::KeyDetailRecord>, ApiError> {
     let target = required_param(&target, "key", API_REF_PARAM_MAX_BYTES)?;
-    let Some(key) = crate::db::get_key_detail_read_only(&state.db_path, target)? else {
+    let Some(key) = crate::db::get_key_detail_read_only(&state.read_pool, target)? else {
         return Err(ApiError::not_found("key not found"));
     };
     Ok(Json(key))
@@ -220,7 +228,7 @@ pub async fn list_risks(
     }
 
     Ok(Json(crate::db::list_risks_read_only(
-        &state.db_path,
+        &state.read_pool,
         &RiskQuery {
             severity,
             code: optional_param(query.code, "code", API_FILTER_PARAM_MAX_BYTES)?
@@ -234,7 +242,7 @@ pub async fn get_risk(
     State(state): State<AppState>,
     Path(id): Path<i64>,
 ) -> Result<Json<crate::models::RiskRecord>, ApiError> {
-    let Some(risk) = crate::db::get_risk_read_only(&state.db_path, id)? else {
+    let Some(risk) = crate::db::get_risk_read_only(&state.read_pool, id)? else {
         return Err(ApiError::not_found("risk not found"));
     };
     Ok(Json(risk))
@@ -250,7 +258,7 @@ pub async fn list_graph(
     Query(query): Query<GraphListQuery>,
 ) -> Result<Json<Vec<crate::models::GraphEdgeRecord>>, ApiError> {
     Ok(Json(crate::db::list_graph_edges_read_only_limited(
-        &state.db_path,
+        &state.read_pool,
         query.limit.unwrap_or(1000).min(API_LIMIT),
     )?))
 }
@@ -268,13 +276,13 @@ pub async fn find_path(
     let from = required_param(&query.from, "from", API_REF_PARAM_MAX_BYTES)?;
     let to = required_param(&query.to, "to", API_REF_PARAM_MAX_BYTES)?;
 
-    let Some(start) = crate::db::resolve_graph_node_ref_read_only(&state.db_path, from)? else {
+    let Some(start) = crate::db::resolve_graph_node_ref_read_only(&state.read_pool, from)? else {
         return Err(ApiError::not_found("source graph node not found"));
     };
-    let Some(end) = crate::db::resolve_graph_node_ref_read_only(&state.db_path, to)? else {
+    let Some(end) = crate::db::resolve_graph_node_ref_read_only(&state.read_pool, to)? else {
         return Err(ApiError::not_found("destination graph node not found"));
     };
-    let edges = crate::db::list_graph_edges_for_analysis(&state.db_path)?;
+    let edges = crate::db::list_graph_edges_for_api_analysis(&state.read_pool)?;
     Ok(Json(graph::find_path(&edges, start, end)))
 }
 
@@ -289,11 +297,12 @@ pub async fn blast_radius(
 ) -> Result<Json<crate::models::BlastRadiusRecord>, ApiError> {
     let username = required_param(&query.user, "user", API_FILTER_PARAM_MAX_BYTES)?;
 
-    let entry_points = crate::db::list_user_nodes_by_username_read_only(&state.db_path, username)?;
+    let entry_points =
+        crate::db::list_user_nodes_by_username_read_only(&state.read_pool, username)?;
     if entry_points.is_empty() {
         return Err(ApiError::not_found("user not found"));
     }
-    let edges = crate::db::list_graph_edges_for_analysis(&state.db_path)?;
+    let edges = crate::db::list_graph_edges_for_api_analysis(&state.read_pool)?;
     Ok(Json(graph::compute_blast_radius(
         &edges,
         &entry_points,
@@ -311,7 +320,7 @@ pub async fn list_scan_runs(
     Query(query): Query<ScanRunListQuery>,
 ) -> Result<Json<Vec<crate::models::ScanRunRecord>>, ApiError> {
     Ok(Json(crate::db::list_scan_runs_read_only(
-        &state.db_path,
+        &state.read_pool,
         query.limit.unwrap_or(50).min(API_LIMIT),
     )?))
 }
@@ -321,7 +330,7 @@ pub async fn get_scan_run(
     Path(id): Path<String>,
 ) -> Result<Json<crate::models::ScanRunDetailRecord>, ApiError> {
     let id = required_param(&id, "scan run id", API_REF_PARAM_MAX_BYTES)?;
-    let Some(run) = crate::db::get_scan_run_read_only(&state.db_path, id)? else {
+    let Some(run) = crate::db::get_scan_run_read_only(&state.read_pool, id)? else {
         return Err(ApiError::not_found("scan run not found"));
     };
     Ok(Json(run))
@@ -330,7 +339,7 @@ pub async fn get_scan_run(
 pub async fn list_baselines(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<crate::models::BaselineRecord>>, ApiError> {
-    Ok(Json(crate::db::list_baselines_read_only(&state.db_path)?))
+    Ok(Json(crate::db::list_baselines_read_only(&state.read_pool)?))
 }
 
 #[derive(Debug, Deserialize)]
@@ -367,7 +376,7 @@ pub async fn list_exceptions(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<crate::models::RiskExceptionRecord>>, ApiError> {
     Ok(Json(crate::db::list_risk_exceptions_read_only(
-        &state.db_path,
+        &state.read_pool,
     )?))
 }
 
@@ -388,22 +397,19 @@ pub async fn add_exception(
     ensure_write_enabled(&state)?;
     let code = required_param(&request.code, "code", API_FILTER_PARAM_MAX_BYTES)?;
     let reason = required_param(&request.reason, "reason", API_REF_PARAM_MAX_BYTES)?;
-    crate::security::validate_exception_username(request.username.as_deref())
-        .map_err(ApiError::bad_request_from_anyhow)?;
-    crate::security::validate_exception_fingerprint(request.fingerprint.as_deref())
-        .map_err(ApiError::bad_request_from_anyhow)?;
-    crate::security::validate_exception_expires_at(request.expires_at.as_deref())
+    let exception = crate::models::NewRiskException {
+        risk_code: code.to_ascii_uppercase(),
+        host_id: request.host_id,
+        username: request.username,
+        public_key_fingerprint: request.fingerprint,
+        reason: reason.to_string(),
+        expires_at: request.expires_at,
+    };
+    crate::security::validate_new_risk_exception(&exception)
         .map_err(ApiError::bad_request_from_anyhow)?;
     Ok(Json(crate::db::add_risk_exception(
         &state.db_path,
-        &crate::models::NewRiskException {
-            risk_code: code.to_ascii_uppercase(),
-            host_id: request.host_id,
-            username: request.username,
-            public_key_fingerprint: request.fingerprint,
-            reason: reason.to_string(),
-            expires_at: request.expires_at,
-        },
+        &exception,
     )?))
 }
 
@@ -422,7 +428,7 @@ pub async fn list_known_hosts(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<crate::models::KnownHostEntryRecord>>, ApiError> {
     Ok(Json(crate::db::list_known_host_entries_read_only(
-        &state.db_path,
+        &state.read_pool,
         API_LIMIT,
     )?))
 }
@@ -431,7 +437,7 @@ pub async fn list_ssh_config(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<crate::models::SshClientConfigEntryRecord>>, ApiError> {
     Ok(Json(crate::db::list_ssh_client_config_entries_read_only(
-        &state.db_path,
+        &state.read_pool,
         API_LIMIT,
     )?))
 }
@@ -440,7 +446,7 @@ pub async fn list_host_aliases(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<crate::models::HostAliasRecord>>, ApiError> {
     Ok(Json(crate::db::list_host_aliases_read_only(
-        &state.db_path,
+        &state.read_pool,
         API_LIMIT,
     )?))
 }
@@ -449,7 +455,7 @@ pub async fn list_data_quality(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<crate::models::DataQualityFindingRecord>>, ApiError> {
     Ok(Json(crate::db::list_data_quality_findings_read_only(
-        &state.db_path,
+        &state.read_pool,
         API_LIMIT,
     )?))
 }
@@ -519,24 +525,27 @@ pub async fn compliance_report(
     Query(query): Query<ComplianceQuery>,
 ) -> Result<Json<crate::compliance::ComplianceReport>, ApiError> {
     let framework = query.framework.as_deref().unwrap_or("all");
-    let risk_codes = crate::db::list_active_risk_codes(&state.db_path)?;
+    let risk_codes = crate::db::list_active_risk_codes_read_only(&state.read_pool)?;
     Ok(Json(crate::compliance::build_compliance_report(
-        framework, &risk_codes,
+        framework,
+        &risk_codes,
     )))
 }
 
 pub async fn operations_metrics(
     State(state): State<AppState>,
 ) -> Result<Json<crate::models::OperationsMetricsRecord>, ApiError> {
-    Ok(Json(crate::db::load_operations_metrics(&state.db_path)?))
+    Ok(Json(crate::db::load_operations_metrics_read_only(
+        &state.read_pool,
+    )?))
 }
 
 pub async fn hardening_report(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<crate::hardening::HostHardeningScore>>, ApiError> {
-    let hosts = crate::db::list_hosts_read_only(&state.db_path, API_LIMIT)?;
+    let hosts = crate::db::list_hosts_read_only(&state.read_pool, API_LIMIT)?;
     let risks = crate::db::list_risks_read_only(
-        &state.db_path,
+        &state.read_pool,
         &RiskQuery {
             severity: None,
             code: None,
@@ -561,13 +570,13 @@ pub async fn find_paths(
 ) -> Result<Json<crate::models::GraphPathsRecord>, ApiError> {
     let from = required_param(&query.from, "from", API_REF_PARAM_MAX_BYTES)?;
     let to = required_param(&query.to, "to", API_REF_PARAM_MAX_BYTES)?;
-    let Some(start) = crate::db::resolve_graph_node_ref_read_only(&state.db_path, from)? else {
+    let Some(start) = crate::db::resolve_graph_node_ref_read_only(&state.read_pool, from)? else {
         return Err(ApiError::not_found("source graph node not found"));
     };
-    let Some(end) = crate::db::resolve_graph_node_ref_read_only(&state.db_path, to)? else {
+    let Some(end) = crate::db::resolve_graph_node_ref_read_only(&state.read_pool, to)? else {
         return Err(ApiError::not_found("destination graph node not found"));
     };
-    let edges = crate::db::list_graph_edges_for_analysis(&state.db_path)?;
+    let edges = crate::db::list_graph_edges_for_api_analysis(&state.read_pool)?;
     Ok(Json(graph::find_all_paths(
         &edges,
         start,
@@ -588,11 +597,11 @@ pub async fn key_blast_radius(
     let fingerprint = required_param(&query.fingerprint, "fingerprint", API_REF_PARAM_MAX_BYTES)?;
     let normalized = fingerprint.strip_prefix("key:").unwrap_or(fingerprint);
     let entry_points =
-        crate::db::list_public_key_nodes_by_fingerprint(&state.db_path, normalized)?;
+        crate::db::list_public_key_nodes_by_fingerprint_read_only(&state.read_pool, normalized)?;
     if entry_points.is_empty() {
         return Err(ApiError::not_found("public key not found"));
     }
-    let edges = crate::db::list_graph_edges_for_analysis(&state.db_path)?;
+    let edges = crate::db::list_graph_edges_for_api_analysis(&state.read_pool)?;
     Ok(Json(graph::compute_key_compromise_blast_radius(
         &edges,
         normalized,

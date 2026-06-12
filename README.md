@@ -336,16 +336,20 @@ Stale and never-rotated widely deployed keys produce `SSH_KEY_STALE` and `SSH_KE
 
 ### Compliance Mapping (`compliance`)
 
+Maps open risk codes to CIS and STIG SSH control catalogs. Use `all` to include every framework, or filter with `CIS` or `STIG`.
+
 ```bash
 sshmap compliance report --framework CIS --db sshmap.db
 sshmap compliance report --framework all --json --db sshmap.db
 ```
 
+The REST API exposes the same report at `GET /api/compliance?framework=CIS`. Framework values are length-limited and restricted to alphanumeric characters, hyphen, and underscore.
+
 ### v1.2.0 Automation and Integrations
 
 | Feature | Command / API | Purpose |
 |---------|---------------|---------|
-| Webhook alerting | `sshmap watch --webhook-url URL` | Periodic analyze cycles with optional baseline drift in webhook payload |
+| Webhook alerting | `sshmap watch --webhook-url URL` | Periodic analyze cycles with optional baseline drift in webhook payload; webhook failures are logged and do not stop the watch loop |
 | SARIF export | `sshmap export sarif` | SARIF 2.1.0 for GitHub Code Scanning and CI gates |
 | Remediation export | `sshmap export remediation --format ansible\|shell` | Bulk Ansible playbook or shell script snippets from open risks |
 | Evidence audit bundle | `sshmap export bundle --output audit.zip` | ZIP manifest with hosts, risks, optional raw evidence |
@@ -430,7 +434,7 @@ Only use SSHMap against systems you own or are explicitly authorized to assess.
 
 SSHMap supports read-only inspection through the system OpenSSH client or the built-in native transport. It does not brute force, exploit, or attempt password login. An authorization notice is printed before discovery, scan, and local-scan commands.
 
-Webhook URLs are validated (HTTPS required except loopback HTTP), DNS is resolved and pinned per request, redirects are disabled, and URL credentials are stripped before outbound delivery. Import host identifiers are validated before evidence is stored.
+Webhook URLs are validated (HTTPS required except loopback HTTP), DNS is resolved and pinned per request, redirects are disabled, and URL credentials are stripped before outbound delivery. Import host identifiers are validated before evidence is stored. The `watch` command logs webhook delivery failures and continues scheduled analysis cycles.
 
 See [SECURITY.md](SECURITY.md) for API authentication, native transport dependency notes, and reporting security issues.
 
@@ -498,7 +502,7 @@ Long-running commands print **live status to stderr** when stderr is an interact
 | `workflow run` | Phase banners (`discovery`, `scan`, `analyze`) plus per-target progress in each phase |
 | `analyze` | Phase steps: loading evidence, parsing, generating risks, persisting |
 | `local-scan` | Current evidence type (`passwd`, `sshd_config`, …) |
-| `watch` | Analyze phase progress on each scheduled cycle |
+| `watch` | Analyze phase progress on each scheduled cycle; webhook errors are logged without stopping the loop |
 
 **Defaults:** Progress is on when stderr is a TTY. Disable globally with `--no-progress`. Force on in non-TTY environments (CI logs, redirected stderr) with `--progress` on `discover`, `scan`, or `workflow run`.
 
@@ -636,7 +640,7 @@ sshmap serve --db sshmap.db --listen 127.0.0.1:8080 --read-only --token "$SSHMAP
 sshmap serve --db sshmap.db --listen 127.0.0.1:8080 --read-only --require-token --token "$SSHMAP_TOKEN"
 ```
 
-Send the token in the `X-SSHMap-Token` header. The React dashboard stores it in browser local storage from the Tools page. `/health` is unauthenticated; `/api/*` routes are rate-limited per client IP.
+Send the token in the `X-SSHMap-Token` header. The React dashboard stores it in browser local storage from the Tools page. `/health` is unauthenticated; `/api/*` routes are rate-limited per client IP. Graph analysis endpoints cap loaded edges at 10,000 for API requests (CLI graph commands allow up to 100,000).
 
 Write API endpoints are disabled by default. To create baselines or exceptions through HTTP, start the server with an explicit token and `--allow-write-api`:
 

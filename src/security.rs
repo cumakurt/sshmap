@@ -5,6 +5,7 @@ use std::path::Path;
 const MAX_FINGERPRINT_BYTES: usize = 256;
 const MAX_RISK_CODE_BYTES: usize = 256;
 const MAX_EXCEPTION_REASON_BYTES: usize = 512;
+const MAX_COMPLIANCE_FRAMEWORK_BYTES: usize = 32;
 
 pub fn validate_webhook_url(url: &str) -> Result<()> {
     let trimmed = url.trim();
@@ -123,6 +124,23 @@ pub fn validate_exception_expires_at(expires_at: Option<&str>) -> Result<()> {
     }
     chrono::DateTime::parse_from_rfc3339(expires_at)
         .with_context(|| format!("expires_at must be RFC3339: {expires_at}"))?;
+    Ok(())
+}
+
+pub fn validate_compliance_framework(framework: &str) -> Result<()> {
+    let framework = framework.trim();
+    if framework.is_empty() {
+        return Ok(());
+    }
+    if framework.len() > MAX_COMPLIANCE_FRAMEWORK_BYTES {
+        bail!("compliance framework parameter is too long");
+    }
+    if !framework
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || character == '-' || character == '_')
+    {
+        bail!("compliance framework parameter contains invalid characters");
+    }
     Ok(())
 }
 
@@ -325,6 +343,14 @@ mod tests {
     #[test]
     fn allows_localhost_http_webhook() {
         validate_webhook_url("http://127.0.0.1:8080/hook").unwrap();
+    }
+
+    #[test]
+    fn validates_compliance_framework_parameter() {
+        validate_compliance_framework("CIS").unwrap();
+        validate_compliance_framework("all").unwrap();
+        assert!(validate_compliance_framework("bad framework").is_err());
+        assert!(validate_compliance_framework(&"x".repeat(64)).is_err());
     }
 
     #[test]

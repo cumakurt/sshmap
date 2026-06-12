@@ -40,6 +40,7 @@ impl ProgressReporter {
         }
     }
 
+    #[allow(dead_code)]
     pub fn tick(&self) {
         self.tick_with_detail(None);
     }

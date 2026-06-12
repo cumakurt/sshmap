@@ -18,8 +18,14 @@ where
 {
     loop {
         run_cycle().await?;
-        if let Some(url) = &config.webhook_url {
-            notify_webhook(url, &config.db_path, config.baseline_name.as_deref()).await?;
+        if let Some(url) = &config.webhook_url
+            && let Err(error) =
+                notify_webhook(url, &config.db_path, config.baseline_name.as_deref()).await
+        {
+            tracing::warn!(
+                error = %error,
+                "webhook notification failed; continuing watch loop"
+            );
         }
         sleep(Duration::from_secs(config.interval_seconds.max(60))).await;
     }

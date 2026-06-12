@@ -524,10 +524,13 @@ pub async fn compliance_report(
     State(state): State<AppState>,
     Query(query): Query<ComplianceQuery>,
 ) -> Result<Json<crate::compliance::ComplianceReport>, ApiError> {
-    let framework = query.framework.as_deref().unwrap_or("all");
+    let framework = optional_param(query.framework, "framework", API_FILTER_PARAM_MAX_BYTES)?
+        .unwrap_or_else(|| "all".to_string());
+    crate::security::validate_compliance_framework(&framework)
+        .map_err(ApiError::bad_request_from_anyhow)?;
     let risk_codes = crate::db::list_active_risk_codes_read_only(&state.read_pool)?;
     Ok(Json(crate::compliance::build_compliance_report(
-        framework,
+        &framework,
         &risk_codes,
     )))
 }
@@ -688,6 +691,13 @@ mod tests {
     #[test]
     fn constant_time_eq_accepts_matching_values() {
         assert!(constant_time_eq("secret-token", "secret-token"));
+    }
+
+    #[test]
+    fn rejects_invalid_compliance_framework() {
+        let error = crate::security::validate_compliance_framework("bad framework")
+            .expect_err("invalid framework");
+        assert!(error.to_string().contains("invalid characters"));
     }
 
     #[test]

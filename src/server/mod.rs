@@ -92,7 +92,7 @@ pub async fn run_server(config: ServerConfig) -> Result<()> {
         allow_write_api: config.allow_write_api,
     };
 
-    let app = build_rate_limited_app(state, config.dashboard_dir.clone());
+    let app = build_rate_limited_app(state, config.dashboard_dir.clone())?;
 
     let listener = tokio::net::TcpListener::bind(config.listen)
         .await
@@ -251,17 +251,19 @@ pub fn build_app(state: AppState, dashboard_dir: Option<PathBuf>) -> Router {
     app.layer(TraceLayer::new_for_http()).with_state(state)
 }
 
-pub fn build_rate_limited_app(state: AppState, dashboard_dir: Option<PathBuf>) -> Router {
-    let rate_limit = Arc::new(
-        GovernorConfigBuilder::default()
-            .per_second(20)
-            .burst_size(40)
-            .key_extractor(PeerIpKeyExtractor)
-            .finish()
-            .expect("rate limiter configuration"),
-    );
+pub fn build_rate_limited_app(
+    state: AppState,
+    dashboard_dir: Option<PathBuf>,
+) -> Result<Router> {
+    let rate_limit = GovernorConfigBuilder::default()
+        .per_second(20)
+        .burst_size(40)
+        .key_extractor(PeerIpKeyExtractor)
+        .finish()
+        .ok_or_else(|| anyhow::anyhow!("failed to configure API rate limiter"))?;
+    let rate_limit = Arc::new(rate_limit);
 
-    build_app(state, dashboard_dir).layer(GovernorLayer::new(rate_limit))
+    Ok(build_app(state, dashboard_dir).layer(GovernorLayer::new(rate_limit)))
 }
 
 fn validate_dashboard_dir(path: &Path) -> Result<()> {

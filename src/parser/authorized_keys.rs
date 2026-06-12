@@ -165,13 +165,13 @@ fn parse_certificate_metadata(cert_bytes: &[u8]) -> CertificateMetadata {
     let _ = cursor.read_options();
     let _ = cursor.read_options();
     let _ = cursor.read_string();
-    if let Ok(signing_key_bytes) = cursor.read_bytes() {
-        if !signing_key_bytes.is_empty() {
-            metadata.signing_ca_fingerprint = Some(format!(
-                "SHA256:{}",
-                STANDARD_NO_PAD.encode(Sha256::digest(signing_key_bytes))
-            ));
-        }
+    if let Ok(signing_key_bytes) = cursor.read_bytes()
+        && !signing_key_bytes.is_empty()
+    {
+        metadata.signing_ca_fingerprint = Some(format!(
+            "SHA256:{}",
+            STANDARD_NO_PAD.encode(Sha256::digest(signing_key_bytes))
+        ));
     }
     metadata
 }

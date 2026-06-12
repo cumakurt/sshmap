@@ -53,3 +53,27 @@ pub async fn notify_webhook(url: &str, db_path: &Path, baseline_name: Option<&st
     );
     send_webhook(url, &payload).await
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db;
+
+    #[tokio::test]
+    async fn notify_webhook_rejects_private_target() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let db_path = temp_dir.path().join("watch.db");
+        db::initialize_database(&db_path).expect("initialize");
+
+        let error = notify_webhook("https://10.0.0.5/hook", &db_path, None)
+            .await
+            .expect_err("private webhook");
+        assert!(error.to_string().contains("not allowed"));
+    }
+
+    #[test]
+    fn webhook_database_label_uses_basename_only() {
+        let label = crate::security::webhook_database_label(Path::new("/tmp/sshmap/prod.db"));
+        assert_eq!(label, "prod.db");
+    }
+}

@@ -190,19 +190,6 @@ pub fn remediation_for_code(risk_code: &str) -> Option<RemediationRecord> {
     Some(record)
 }
 
-pub fn generate_risks(analysis: &NormalizedAnalysis, policy: &RiskPolicy) -> Vec<GeneratedRisk> {
-    generate_risks_with_enrichment(
-        analysis,
-        policy,
-        &enrichment::RiskEnrichmentInput {
-            hosts: &[],
-            host_banners: &BTreeMap::new(),
-            key_ages: &[],
-            server_host_keys: &[],
-        },
-    )
-}
-
 pub fn generate_risks_with_enrichment(
     analysis: &NormalizedAnalysis,
     policy: &RiskPolicy,
@@ -1329,6 +1316,22 @@ mod tests {
         ParsedSudoRule,
     };
 
+    fn generate_risks_for_tests(
+        analysis: &NormalizedAnalysis,
+        policy: &RiskPolicy,
+    ) -> Vec<GeneratedRisk> {
+        generate_risks_with_enrichment(
+            analysis,
+            policy,
+            &enrichment::RiskEnrichmentInput {
+                hosts: &[],
+                host_banners: &BTreeMap::new(),
+                key_ages: &[],
+                server_host_keys: &[],
+            },
+        )
+    }
+
     #[test]
     fn generates_root_login_and_password_auth_risks() {
         let analysis = NormalizedAnalysis {
@@ -1353,7 +1356,7 @@ mod tests {
             ..Default::default()
         };
 
-        let codes = generate_risks(&analysis, &RiskPolicy::default())
+        let codes = generate_risks_for_tests(&analysis, &RiskPolicy::default())
             .into_iter()
             .map(|risk| risk.risk_code)
             .collect::<BTreeSet<_>>();
@@ -1380,7 +1383,7 @@ mod tests {
             ..Default::default()
         };
 
-        let risks = generate_risks(&analysis, &RiskPolicy::default());
+        let risks = generate_risks_for_tests(&analysis, &RiskPolicy::default());
 
         assert_eq!(risks[0].risk_code, "SUDO_NOPASSWD_ALL");
     }
@@ -1392,7 +1395,7 @@ mod tests {
             ..Default::default()
         };
 
-        let risks = generate_risks(&analysis, &RiskPolicy::default());
+        let risks = generate_risks_for_tests(&analysis, &RiskPolicy::default());
 
         assert!(
             risks
@@ -1425,7 +1428,7 @@ mod tests {
             ..Default::default()
         };
 
-        let codes = generate_risks(&analysis, &RiskPolicy::default())
+        let codes = generate_risks_for_tests(&analysis, &RiskPolicy::default())
             .into_iter()
             .map(|risk| risk.risk_code)
             .collect::<BTreeSet<_>>();
@@ -1444,7 +1447,7 @@ mod tests {
             ..Default::default()
         };
 
-        let codes = generate_risks(&analysis, &RiskPolicy::default())
+        let codes = generate_risks_for_tests(&analysis, &RiskPolicy::default())
             .into_iter()
             .map(|risk| risk.risk_code)
             .collect::<BTreeSet<_>>();
@@ -1461,7 +1464,7 @@ mod tests {
             ..Default::default()
         };
 
-        let risks = generate_risks(&analysis, &RiskPolicy::default());
+        let risks = generate_risks_for_tests(&analysis, &RiskPolicy::default());
 
         assert!(
             risks

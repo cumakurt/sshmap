@@ -521,18 +521,21 @@ async fn main() -> Result<()> {
             }
         },
         Command::Path(args) => {
+            security::validate_graph_node_reference(&args.from)?;
+            security::validate_graph_node_reference(&args.to)?;
             let Some(start) = db::resolve_graph_node_ref(&args.db, &args.from)? else {
                 anyhow::bail!("graph node {} was not found", args.from);
             };
             let Some(end) = db::resolve_graph_node_ref(&args.db, &args.to)? else {
                 anyhow::bail!("graph node {} was not found", args.to);
             };
-            let edges = db::list_graph_edges_for_analysis(&args.db)?;
-            let path = if args.weighted {
-                graph::find_weighted_path(&edges, start, end)
+            let slice = db::load_graph_edges_for_analysis(&args.db, args.full_graph)?;
+            let mut path = if args.weighted {
+                graph::find_weighted_path(&slice.edges, start, end)
             } else {
-                graph::find_path(&edges, start, end)
+                graph::find_path(&slice.edges, start, end)
             };
+            path.edges_truncated = slice.truncated;
             if args.json {
                 println!("{}", serde_json::to_string_pretty(&path)?);
             } else {
@@ -540,14 +543,22 @@ async fn main() -> Result<()> {
             }
         }
         Command::Paths(args) => {
+            security::validate_graph_node_reference(&args.from)?;
+            security::validate_graph_node_reference(&args.to)?;
             let Some(start) = db::resolve_graph_node_ref(&args.db, &args.from)? else {
                 anyhow::bail!("graph node {} was not found", args.from);
             };
             let Some(end) = db::resolve_graph_node_ref(&args.db, &args.to)? else {
                 anyhow::bail!("graph node {} was not found", args.to);
             };
-            let edges = db::list_graph_edges_for_analysis(&args.db)?;
-            let paths = graph::find_all_paths(&edges, start, end, args.limit.max(1));
+            let slice = db::load_graph_edges_for_analysis(&args.db, args.full_graph)?;
+            let paths = graph::find_all_paths(
+                &slice.edges,
+                start,
+                end,
+                args.limit.max(1),
+                slice.truncated,
+            );
             if args.json {
                 println!("{}", serde_json::to_string_pretty(&paths)?);
             } else {
@@ -559,8 +570,10 @@ async fn main() -> Result<()> {
             if entry_points.is_empty() {
                 anyhow::bail!("user {} was not found in the analyzed inventory", args.user);
             }
-            let edges = db::list_graph_edges_for_analysis(&args.db)?;
-            let blast_radius = graph::compute_blast_radius(&edges, &entry_points, &args.user);
+            let slice = db::load_graph_edges_for_analysis(&args.db, args.full_graph)?;
+            let mut blast_radius =
+                graph::compute_blast_radius(&slice.edges, &entry_points, &args.user);
+            blast_radius.edges_truncated = slice.truncated;
             if args.json {
                 println!("{}", serde_json::to_string_pretty(&blast_radius)?);
             } else {
@@ -577,9 +590,13 @@ async fn main() -> Result<()> {
             if entry_points.is_empty() {
                 anyhow::bail!("public key {fingerprint} was not found in the analyzed inventory");
             }
-            let edges = db::list_graph_edges_for_analysis(&args.db)?;
-            let blast_radius =
-                graph::compute_key_compromise_blast_radius(&edges, &fingerprint, &entry_points);
+            let slice = db::load_graph_edges_for_analysis(&args.db, args.full_graph)?;
+            let mut blast_radius = graph::compute_key_compromise_blast_radius(
+                &slice.edges,
+                &fingerprint,
+                &entry_points,
+            );
+            blast_radius.edges_truncated = slice.truncated;
             if args.json {
                 println!("{}", serde_json::to_string_pretty(&blast_radius)?);
             } else {
@@ -857,6 +874,12 @@ async fn main() -> Result<()> {
         Command::Completion(args) => cli::run_completion(args.shell),
         Command::Watch(args) => {
             let db_path = config::resolve_database(&app_config, &args.db);
+            if let Some(url) = &args.webhook_url {
+                security::validate_webhook_url(url)?;
+            }
+            if let Some(name) = &args.baseline {
+                security::validate_baseline_name(name, false)?;
+            }
             let config = watch::WatchConfig {
                 db_path: db_path.clone(),
                 interval_seconds: args.interval,
@@ -907,11 +930,15 @@ async fn main() -> Result<()> {
                         limit: 10_000,
                     },
                 )?;
-                let scores = hardening::compute_inventory_hardening(&hosts, &risks);
+                let report = hardening::build_hardening_report(&hosts, &risks);
                 if args.json {
-                    println!("{}", serde_json::to_string_pretty(&scores)?);
+                    println!("{}", serde_json::to_string_pretty(&report)?);
                 } else {
-                    for score in scores {
+                    println!(
+                        "Hardening summary: {} controls, buckets {:?}",
+                        report.control_count, report.summary
+                    );
+                    for score in report.hosts {
                         println!(
                             "{} ({}) score={} risks={}",
                             score.hostname.as_deref().unwrap_or("-"),

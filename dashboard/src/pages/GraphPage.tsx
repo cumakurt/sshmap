@@ -1,6 +1,6 @@
 import cytoscape, { type ElementDefinition } from "cytoscape";
 import { useEffect, useRef, useState } from "react";
-import { api, type GraphEdgeRecord } from "../api";
+import { api, type GraphEdgeRecord, type GraphListRecord } from "../api";
 
 function cytoscapeNodeId(type: string, id: number): string {
   return `${type}:${id}`;
@@ -40,13 +40,25 @@ function toCytoscapeElements(edges: GraphEdgeRecord[]): ElementDefinition[] {
 
 export function GraphPage() {
   const [edges, setEdges] = useState<GraphEdgeRecord[]>([]);
+  const [truncated, setTruncated] = useState(false);
+  const [totalEdges, setTotalEdges] = useState(0);
   const [view, setView] = useState<"canvas" | "table">("canvas");
   const [limit, setLimit] = useState(2000);
   const [edgeType, setEdgeType] = useState("");
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    api<GraphEdgeRecord[]>(`/api/graph?limit=${limit}`).then(setEdges).catch(() => setEdges([]));
+    api<GraphListRecord>(`/api/graph?limit=${limit}`)
+      .then((response) => {
+        setEdges(response.edges);
+        setTruncated(response.truncated);
+        setTotalEdges(response.total_edges);
+      })
+      .catch(() => {
+        setEdges([]);
+        setTruncated(false);
+        setTotalEdges(0);
+      });
   }, [limit]);
 
   const edgeTypes = [...new Set(edges.map((edge) => edge.edge_type))].sort();
@@ -97,7 +109,11 @@ export function GraphPage() {
   return (
     <>
       <div className="graph-toolbar">
-        <span className="muted">{edges.length} graph edges loaded.</span>
+        <span className="muted">
+          {edges.length} graph edges loaded
+          {totalEdges > 0 ? ` of ${totalEdges}` : ""}.
+          {truncated ? " Results are truncated to the selected limit." : ""}
+        </span>
         <label>
           Limit
           <select value={limit} onChange={(event) => setLimit(Number(event.target.value))}>

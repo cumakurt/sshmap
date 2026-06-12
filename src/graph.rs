@@ -77,6 +77,7 @@ pub fn find_all_paths(
     from: GraphNodeRecord,
     to: GraphNodeRecord,
     max_paths: usize,
+    edges_truncated: bool,
 ) -> GraphPathsRecord {
     let start = NodeKey::from_node(&from);
     let goal = NodeKey::from_node(&to);
@@ -106,6 +107,7 @@ pub fn find_all_paths(
         from,
         to,
         truncated: path_records.len() >= max_paths,
+        edges_truncated,
         paths: path_records,
     }
 }
@@ -194,7 +196,19 @@ pub fn compute_key_compromise_blast_radius(
         reachable_users: reachable_users.into_values().collect(),
         passwordless_sudo_hosts: passwordless_sudo_hosts.into_values().collect(),
         total_path_weight,
+        edges_truncated: false,
     }
+}
+
+pub fn key_compromise_blast_radius_with_truncation(
+    edges: &[GraphEdgeRecord],
+    fingerprint: &str,
+    entry_points: &[GraphNodeRecord],
+    edges_truncated: bool,
+) -> KeyCompromiseBlastRadiusRecord {
+    let mut record = compute_key_compromise_blast_radius(edges, fingerprint, entry_points);
+    record.edges_truncated = edges_truncated;
+    record
 }
 
 enum PathStrategy {
@@ -207,7 +221,18 @@ pub fn find_path(
     from: GraphNodeRecord,
     to: GraphNodeRecord,
 ) -> GraphPathRecord {
-    find_path_with_strategy(edges, from, to, PathStrategy::BreadthFirst)
+    find_path_with_truncation(edges, from, to, false)
+}
+
+pub fn find_path_with_truncation(
+    edges: &[GraphEdgeRecord],
+    from: GraphNodeRecord,
+    to: GraphNodeRecord,
+    edges_truncated: bool,
+) -> GraphPathRecord {
+    let mut path = find_path_with_strategy(edges, from, to, PathStrategy::BreadthFirst);
+    path.edges_truncated = edges_truncated;
+    path
 }
 
 fn find_path_with_strategy(
@@ -233,6 +258,7 @@ fn find_path_with_strategy(
             to,
             nodes: Vec::new(),
             edges: Vec::new(),
+            edges_truncated: false,
         };
     }
 
@@ -379,12 +405,14 @@ fn build_path_record(
         to: to.clone(),
         nodes: path_nodes,
         edges: path_edges.to_vec(),
+        edges_truncated: false,
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn collect_paths(
     adjacency: &BTreeMap<NodeKey, Vec<&GraphEdgeRecord>>,
-    labels: &BTreeMap<NodeKey, String>,
+    _labels: &BTreeMap<NodeKey, String>,
     current: &NodeKey,
     goal: &NodeKey,
     visited: &mut BTreeSet<NodeKey>,
@@ -408,7 +436,7 @@ fn collect_paths(
         current_path.push((*edge).clone());
         collect_paths(
             adjacency,
-            labels,
+            _labels,
             &next,
             goal,
             visited,
@@ -424,7 +452,21 @@ fn collect_paths(
     }
 }
 
+fn append_edges_truncated_warning(output: &mut String, truncated: bool) {
+    if truncated {
+        writeln!(
+            output,
+            "\nWarning: graph analysis used a truncated edge set; results may be incomplete."
+        )
+        .expect("writing to String cannot fail");
+    }
+}
+
 pub fn format_path_text(path: &GraphPathRecord) -> String {
+    format_path_text_with_options(path, true)
+}
+
+fn format_path_text_with_options(path: &GraphPathRecord, include_truncation_warning: bool) -> String {
     let mut output = String::new();
     if !path.found {
         writeln!(
@@ -433,6 +475,9 @@ pub fn format_path_text(path: &GraphPathRecord) -> String {
             path.from.node_type, path.from.label, path.to.node_type, path.to.label
         )
         .expect("writing to String cannot fail");
+        if include_truncation_warning {
+            append_edges_truncated_warning(&mut output, path.edges_truncated);
+        }
         return output;
     }
 
@@ -458,6 +503,9 @@ pub fn format_path_text(path: &GraphPathRecord) -> String {
         }
     }
 
+    if include_truncation_warning {
+        append_edges_truncated_warning(&mut output, path.edges_truncated);
+    }
     output
 }
 
@@ -465,6 +513,15 @@ pub fn compute_blast_radius(
     edges: &[GraphEdgeRecord],
     entry_points: &[GraphNodeRecord],
     username: &str,
+) -> BlastRadiusRecord {
+    compute_blast_radius_with_truncation(edges, entry_points, username, false)
+}
+
+pub fn compute_blast_radius_with_truncation(
+    edges: &[GraphEdgeRecord],
+    entry_points: &[GraphNodeRecord],
+    username: &str,
+    edges_truncated: bool,
 ) -> BlastRadiusRecord {
     let mut adjacency: BTreeMap<NodeKey, Vec<&GraphEdgeRecord>> = BTreeMap::new();
     let mut labels: BTreeMap<NodeKey, GraphNodeRecord> = BTreeMap::new();
@@ -544,6 +601,8 @@ pub fn compute_blast_radius(
         reachable_sudo_rules: reachable_sudo_rules.into_values().collect(),
         host_count: reachable_hosts_vec.len(),
         passwordless_sudo_host_count: passwordless_sudo_hosts_vec.len(),
+        sudo_path_to_root_score: sudo_path_to_root_score(edges, username),
+        edges_truncated,
     }
 }
 
@@ -592,6 +651,12 @@ pub fn format_blast_radius_text(record: &BlastRadiusRecord) -> String {
         }
     }
 
+    if let Some(score) = record.sudo_path_to_root_score {
+        writeln!(output, "Sudo path-to-root score: {score}")
+            .expect("writing to String cannot fail");
+    }
+
+    append_edges_truncated_warning(&mut output, record.edges_truncated);
     output
 }
 
@@ -613,8 +678,9 @@ pub fn format_paths_text(record: &GraphPathsRecord) -> String {
     }
     for (index, path) in record.paths.iter().enumerate() {
         writeln!(output, "\nPath {}:", index + 1).expect("writing to String cannot fail");
-        output.push_str(&format_path_text(path));
+        output.push_str(&format_path_text_with_options(path, false));
     }
+    append_edges_truncated_warning(&mut output, record.edges_truncated);
     output
 }
 
@@ -638,6 +704,7 @@ pub fn format_key_blast_radius_text(record: &KeyCompromiseBlastRadiusRecord) -> 
     .expect("writing to String cannot fail");
     writeln!(output, "Max path weight: {}", record.total_path_weight)
         .expect("writing to String cannot fail");
+    append_edges_truncated_warning(&mut output, record.edges_truncated);
     output
 }
 

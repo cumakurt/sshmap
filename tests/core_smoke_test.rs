@@ -283,6 +283,37 @@ fn serve_api_requires_token_and_returns_summary() {
     assert_success(&summary);
     assert!(String::from_utf8_lossy(&summary.stdout).contains("critical_risks"));
 
+    let graph = Command::new("curl")
+        .args([
+            "-sf",
+            "-H",
+            "X-SSHMap-Token: smoke-token",
+            &format!("http://{listen}/api/graph"),
+        ])
+        .output()
+        .expect("curl graph with token");
+    assert_success(&graph);
+    let graph_body = String::from_utf8_lossy(&graph.stdout);
+    assert!(graph_body.contains("\"edges\""));
+    assert!(graph_body.contains("\"truncated\""));
+    assert!(graph_body.contains("\"total_edges\""));
+    assert!(graph_body.contains("\"edge_limit\""));
+
+    let hardening = Command::new("curl")
+        .args([
+            "-sf",
+            "-H",
+            "X-SSHMap-Token: smoke-token",
+            &format!("http://{listen}/api/hardening"),
+        ])
+        .output()
+        .expect("curl hardening with token");
+    assert_success(&hardening);
+    let hardening_body = String::from_utf8_lossy(&hardening.stdout);
+    assert!(hardening_body.contains("\"hosts\""));
+    assert!(hardening_body.contains("\"summary\""));
+    assert!(hardening_body.contains("\"control_count\""));
+
     let _ = server.kill();
     let _ = server.wait();
 }

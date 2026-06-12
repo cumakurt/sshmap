@@ -30,7 +30,20 @@ The native transport depends on `russh`, which transitively pulls `rsa` (RUSTSEC
 
 - Prefer `--transport openssh` when auditing sensitive infrastructure.
 - Track `russh` / `rsa` releases and update dependencies promptly.
-- Run `cargo audit` in CI.
+- Run `cargo audit` in CI (see `.cargo/audit.toml` for the documented ignore).
+- Run `scripts/check-rustsec-rsa.sh` periodically or in release prep to detect when a fixed `russh`/`rsa` release is available.
+
+## Graph analysis limits
+
+Path, blast-radius, and related analysis load a bounded subset of graph edges to keep memory and latency predictable:
+
+| Context | Default limit | Full analysis |
+|---------|---------------|---------------|
+| CLI (`path`, `paths`, `blast-radius`, `key-blast-radius`) | 10,000 edges | `--full-graph` (100,000) |
+| HTTP API analysis endpoints | 10,000 edges | Set `SSHMAP_GRAPH_EDGE_LIMIT` on the server |
+| `GET /api/graph` listing | 1,000 edges (query `limit`, max 10,000) | — |
+
+When the inventory exceeds the limit, responses include `edges_truncated: true` (analysis) or `truncated: true` (`GET /api/graph`). Re-run with `--full-graph` or raise `SSHMAP_GRAPH_EDGE_LIMIT` only on trusted hosts with sufficient memory.
 
 ## HTTP API
 

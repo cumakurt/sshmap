@@ -1,0 +1,6 @@
+[advisories]
+ignore = [
+    # russh -> rsa transitive dependency; no fixed release available.
+    # Prefer `--transport openssh` for sensitive audits. See SECURITY.md.
+    "RUSTSEC-2023-0071",
+]

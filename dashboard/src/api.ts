@@ -168,6 +168,30 @@ export interface KeyDetailRecord {
   risks: RiskRecord[];
 }
 
+export interface GraphListRecord {
+  edges: GraphEdgeRecord[];
+  truncated: boolean;
+  total_edges: number;
+  edge_limit: number;
+}
+
+export interface HardeningReport {
+  hosts: HostHardeningScore[];
+  summary: Record<string, number>;
+  control_count: number;
+}
+
+export interface HostHardeningScore {
+  host_id: number;
+  hostname: string | null;
+  ip_address: string;
+  score: number;
+  risk_count: number;
+  critical_risks: number;
+  high_risks: number;
+  compliance_percent: number;
+}
+
 export interface GraphEdgeRecord {
   id: number;
   from_type: string;
@@ -186,6 +210,7 @@ export interface GraphPathRecord {
   found: boolean;
   nodes: unknown[];
   edges: GraphEdgeRecord[];
+  edges_truncated?: boolean;
 }
 
 export interface BlastRadiusRecord {
@@ -194,6 +219,8 @@ export interface BlastRadiusRecord {
   passwordless_sudo_host_count: number;
   entry_points: unknown[];
   reachable_hosts: unknown[];
+  sudo_path_to_root_score?: number | null;
+  edges_truncated?: boolean;
 }
 
 export interface RiskExceptionRecord {

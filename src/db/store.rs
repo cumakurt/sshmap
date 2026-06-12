@@ -1,10 +1,14 @@
+use crate::db::migrations::{
+    apply_migrations, apply_pragmas, count_rows, initialize_database, like_contains_pattern,
+};
+use crate::db::pool::ReadOnlyDbAccess;
 use crate::baseline;
 use crate::discovery::DiscoveryResult;
 use crate::host_key_scan::ScannedServerHostKey;
 use crate::models::{
     AuditEventRecord, BaselineDiffRecord, BaselineRecord, BaselineRiskRecord, BaselineSummary,
     BaselineTrendPoint, DataQualityFindingRecord, DatabaseStats, DetailedDatabaseStats,
-    GeneratedRisk, GraphEdgeRecord, GraphNodeRecord, HostAliasRecord, HostContextRecord,
+    GeneratedRisk, HostAliasRecord, HostContextRecord,
     HostDetailRecord, HostQuery, HostRecord, HostScanResult, HostServerKeyRecord, ImportSummary,
     ImportedHost, KeyDetailRecord, KeyLocationRecord, KeySummaryRecord, KnownHostEntryRecord,
     NewRiskException, NormalizedAnalysis, OperationsMetricsRecord, ParsedAuthorizedKey,
@@ -15,104 +19,11 @@ use crate::models::{
     UserSummaryRecord,
 };
 use crate::target::{hostname_hint, is_ip_address, parse_host_target};
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use chrono::Utc;
-use r2d2_sqlite::SqliteConnectionManager;
-use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, TransactionBehavior, params};
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use rusqlite::{Connection, OptionalExtension, Row, TransactionBehavior, params};
+use std::path::Path;
 use uuid::Uuid;
-
-#[derive(Clone)]
-pub struct ReadOnlyPool {
-    pool: Arc<r2d2::Pool<SqliteConnectionManager>>,
-}
-
-pub trait ReadOnlyDbAccess {
-    fn with_read_connection<T, F>(&self, callback: F) -> Result<T>
-    where
-        F: FnOnce(&Connection) -> Result<T>;
-}
-
-impl ReadOnlyDbAccess for Path {
-    fn with_read_connection<T, F>(&self, callback: F) -> Result<T>
-    where
-        F: FnOnce(&Connection) -> Result<T>,
-    {
-        with_read_only_connection(self, callback)
-    }
-}
-
-impl ReadOnlyDbAccess for PathBuf {
-    fn with_read_connection<T, F>(&self, callback: F) -> Result<T>
-    where
-        F: FnOnce(&Connection) -> Result<T>,
-    {
-        with_read_only_connection(self, callback)
-    }
-}
-
-impl ReadOnlyDbAccess for ReadOnlyPool {
-    fn with_read_connection<T, F>(&self, callback: F) -> Result<T>
-    where
-        F: FnOnce(&Connection) -> Result<T>,
-    {
-        let connection = self
-            .pool
-            .get()
-            .context("failed to acquire read-only database connection from pool")?;
-        apply_read_only_pragmas(&connection)?;
-        callback(&connection)
-    }
-}
-
-impl ReadOnlyPool {
-    pub fn open(path: &Path) -> Result<Self> {
-        if !path.exists() {
-            bail!("database not found: {}", path.display());
-        }
-
-        let manager = SqliteConnectionManager::file(path)
-            .with_flags(OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX);
-        let pool = r2d2::Pool::builder()
-            .max_size(8)
-            .connection_timeout(std::time::Duration::from_secs(5))
-            .build(manager)
-            .with_context(|| format!("failed to create read-only pool for {}", path.display()))?;
-
-        Ok(Self {
-            pool: Arc::new(pool),
-        })
-    }
-}
-
-const MIGRATIONS: &[(i64, &str)] = &[
-    (1, include_str!("../migrations/001_init.sql")),
-    (2, include_str!("../migrations/002_raw_evidence.sql")),
-    (3, include_str!("../migrations/003_normalized_data.sql")),
-    (4, include_str!("../migrations/004_graph_edges.sql")),
-    (5, include_str!("../migrations/005_baselines.sql")),
-    (6, include_str!("../migrations/006_risk_exceptions.sql")),
-    (7, include_str!("../migrations/007_client_data.sql")),
-    (8, include_str!("../migrations/008_app_metadata.sql")),
-    (
-        9,
-        include_str!("../migrations/009_host_aliases_quality.sql"),
-    ),
-    (
-        10,
-        include_str!("../migrations/010_server_keys_compliance.sql"),
-    ),
-    (11, include_str!("../migrations/011_extended_features.sql")),
-];
-
-pub fn initialize_database(path: &Path) -> Result<()> {
-    let connection = Connection::open(path)
-        .with_context(|| format!("failed to open database at {}", path.display()))?;
-    apply_pragmas(&connection)?;
-    apply_migrations(&connection)?;
-    Ok(())
-}
 
 pub fn load_database_stats(path: &Path) -> Result<DatabaseStats> {
     initialize_database(path)?;
@@ -231,22 +142,6 @@ fn set_app_metadata_connection(connection: &Connection, key: &str, value: &str) 
     Ok(())
 }
 
-pub fn with_read_only_connection<T, F>(path: &Path, callback: F) -> Result<T>
-where
-    F: FnOnce(&Connection) -> Result<T>,
-{
-    if !path.exists() {
-        bail!("database not found: {}", path.display());
-    }
-
-    let connection = Connection::open_with_flags(
-        path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .with_context(|| format!("failed to open database read-only at {}", path.display()))?;
-    apply_read_only_pragmas(&connection)?;
-    callback(&connection)
-}
 
 pub fn store_discovery_results(path: &Path, results: &[DiscoveryResult]) -> Result<ScanRunSummary> {
     let mut connection = Connection::open(path)
@@ -354,11 +249,7 @@ pub fn store_remote_scan_results(
         }
         if result.succeeded() {
             for bastion_host_id in &bastion_host_ids {
-                tx.execute(
-                    "INSERT OR IGNORE INTO bastion_reachability (host_id, bastion_host_id, scan_run_id)
-                     VALUES (?1, ?2, ?3)",
-                    params![host_id, bastion_host_id, scan_run_id],
-                )?;
+                insert_bastion_reachability(&tx, host_id, *bastion_host_id, scan_run_id)?;
             }
         }
     }
@@ -589,83 +480,6 @@ fn list_audit_events_for_scan_run(
         .context("failed to list audit events")
 }
 
-pub fn list_user_nodes_by_username(path: &Path, username: &str) -> Result<Vec<GraphNodeRecord>> {
-    initialize_database(path)?;
-    let connection = Connection::open(path)
-        .with_context(|| format!("failed to open database at {}", path.display()))?;
-    apply_pragmas(&connection)?;
-    list_user_nodes_by_username_connection(&connection, username)
-}
-
-pub fn list_user_nodes_by_username_read_only(
-    source: &(impl ReadOnlyDbAccess + ?Sized),
-    username: &str,
-) -> Result<Vec<GraphNodeRecord>> {
-    source.with_read_connection(|connection| {
-        list_user_nodes_by_username_connection(connection, username)
-    })
-}
-
-fn list_user_nodes_by_username_connection(
-    connection: &Connection,
-    username: &str,
-) -> Result<Vec<GraphNodeRecord>> {
-    let mut statement = connection.prepare(
-        "SELECT u.id, u.username || '@' || COALESCE(h.hostname, h.ip_address)
-         FROM users u
-         JOIN hosts h ON h.id = u.host_id
-         WHERE u.username = ?1
-         ORDER BY h.hostname, h.ip_address",
-    )?;
-    let rows = statement.query_map(params![username], |row| {
-        Ok(GraphNodeRecord {
-            node_type: "USER".to_string(),
-            node_id: row.get(0)?,
-            label: row.get(1)?,
-        })
-    })?;
-
-    rows.collect::<rusqlite::Result<Vec<_>>>()
-        .context("failed to list user graph nodes")
-}
-
-pub fn list_public_key_nodes_by_fingerprint(
-    path: &Path,
-    fingerprint: &str,
-) -> Result<Vec<GraphNodeRecord>> {
-    initialize_database(path)?;
-    let connection = Connection::open(path)
-        .with_context(|| format!("failed to open database at {}", path.display()))?;
-    apply_pragmas(&connection)?;
-    list_public_key_nodes_by_fingerprint_connection(&connection, fingerprint)
-}
-
-pub fn list_public_key_nodes_by_fingerprint_read_only(
-    source: &(impl ReadOnlyDbAccess + ?Sized),
-    fingerprint: &str,
-) -> Result<Vec<GraphNodeRecord>> {
-    source.with_read_connection(|connection| {
-        list_public_key_nodes_by_fingerprint_connection(connection, fingerprint)
-    })
-}
-
-fn list_public_key_nodes_by_fingerprint_connection(
-    connection: &Connection,
-    fingerprint: &str,
-) -> Result<Vec<GraphNodeRecord>> {
-    let normalized = fingerprint.strip_prefix("key:").unwrap_or(fingerprint);
-    let mut statement = connection
-        .prepare("SELECT id, fingerprint_sha256 FROM public_keys WHERE fingerprint_sha256 = ?1")?;
-    let rows = statement.query_map(params![normalized], |row| {
-        Ok(GraphNodeRecord {
-            node_type: "PUBLIC_KEY".to_string(),
-            node_id: row.get(0)?,
-            label: row.get(1)?,
-        })
-    })?;
-    rows.collect::<rusqlite::Result<Vec<_>>>()
-        .context("failed to list public key graph nodes")
-}
 
 pub fn store_imported_hosts(
     path: &Path,
@@ -1417,12 +1231,7 @@ fn map_risk_exception_record(row: &Row<'_>) -> rusqlite::Result<RiskExceptionRec
 
 pub fn create_baseline(path: &Path, name: &str) -> Result<BaselineRecord> {
     let name = name.trim();
-    if name.is_empty() {
-        anyhow::bail!("baseline name cannot be empty");
-    }
-    if name.eq_ignore_ascii_case("latest") {
-        anyhow::bail!("latest is a reserved baseline name");
-    }
+    crate::security::validate_baseline_name(name, false)?;
 
     initialize_database(path)?;
     let mut connection = Connection::open(path)
@@ -1500,6 +1309,9 @@ fn list_baselines_connection(connection: &Connection) -> Result<Vec<BaselineReco
 }
 
 pub fn diff_baselines(path: &Path, from: &str, to: &str) -> Result<BaselineDiffRecord> {
+    crate::security::validate_baseline_name(from.trim(), false)?;
+    crate::security::validate_baseline_name(to.trim(), true)?;
+
     initialize_database(path)?;
     let connection = Connection::open(path)
         .with_context(|| format!("failed to open database at {}", path.display()))?;
@@ -1731,14 +1543,6 @@ fn load_operations_metrics_connection(connection: &Connection) -> Result<Operati
     })
 }
 
-pub fn load_operations_metrics(path: &Path) -> Result<OperationsMetricsRecord> {
-    initialize_database(path)?;
-    let connection = Connection::open(path)
-        .with_context(|| format!("failed to open database at {}", path.display()))?;
-    apply_pragmas(&connection)?;
-    load_operations_metrics_connection(&connection)
-}
-
 pub fn load_operations_metrics_read_only(
     source: &(impl ReadOnlyDbAccess + ?Sized),
 ) -> Result<OperationsMetricsRecord> {
@@ -1767,65 +1571,8 @@ pub fn list_active_risk_codes_read_only(
     source.with_read_connection(list_active_risk_codes_connection)
 }
 
-pub fn rebuild_graph_edges(path: &Path) -> Result<()> {
-    initialize_database(path)?;
-    let connection = Connection::open(path)
-        .with_context(|| format!("failed to open database at {}", path.display()))?;
-    apply_pragmas(&connection)?;
 
-    connection.execute("DELETE FROM graph_edges", [])?;
-    insert_host_user_edges(&connection)?;
-    insert_public_key_edges(&connection)?;
-    insert_certificate_authority_edges(&connection)?;
-    insert_sudo_edges(&connection)?;
-    insert_client_config_edges(&connection)?;
-    insert_bastion_reachability_edges(&connection)?;
-    Ok(())
-}
 
-pub fn migration_version(path: &Path) -> Result<i64> {
-    initialize_database(path)?;
-    let connection = Connection::open(path)
-        .with_context(|| format!("failed to open database at {}", path.display()))?;
-    apply_pragmas(&connection)?;
-    connection
-        .query_row(
-            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
-            [],
-            |row| row.get(0),
-        )
-        .context("failed to read migration version")
-}
-
-pub fn list_graph_edges(path: &Path) -> Result<Vec<GraphEdgeRecord>> {
-    initialize_database(path)?;
-    let connection = Connection::open(path)
-        .with_context(|| format!("failed to open database at {}", path.display()))?;
-    apply_pragmas(&connection)?;
-    list_graph_edges_connection(&connection, None)
-}
-
-pub const GRAPH_ANALYSIS_EDGE_LIMIT: usize = 100_000;
-pub const GRAPH_API_ANALYSIS_EDGE_LIMIT: usize = 10_000;
-
-pub fn list_graph_edges_read_only_limited(
-    source: &(impl ReadOnlyDbAccess + ?Sized),
-    limit: usize,
-) -> Result<Vec<GraphEdgeRecord>> {
-    source.with_read_connection(|connection| list_graph_edges_connection(connection, Some(limit)))
-}
-
-pub fn list_graph_edges_for_analysis(
-    source: &(impl ReadOnlyDbAccess + ?Sized),
-) -> Result<Vec<GraphEdgeRecord>> {
-    list_graph_edges_read_only_limited(source, GRAPH_ANALYSIS_EDGE_LIMIT)
-}
-
-pub fn list_graph_edges_for_api_analysis(
-    source: &(impl ReadOnlyDbAccess + ?Sized),
-) -> Result<Vec<GraphEdgeRecord>> {
-    list_graph_edges_read_only_limited(source, GRAPH_API_ANALYSIS_EDGE_LIMIT)
-}
 
 pub fn count_open_risks_by_severity_read_only(
     source: &(impl ReadOnlyDbAccess + ?Sized),
@@ -2091,147 +1838,8 @@ pub fn list_risk_exceptions_read_only(
     source.with_read_connection(list_risk_exceptions_connection)
 }
 
-fn list_graph_edges_connection(
-    connection: &Connection,
-    limit: Option<usize>,
-) -> Result<Vec<GraphEdgeRecord>> {
-    let sql = match limit {
-        Some(_) => {
-            "SELECT
-                id, from_type, from_id, from_label, to_type, to_id, to_label,
-                edge_type, weight, confidence, evidence
-             FROM graph_edges
-             ORDER BY id
-             LIMIT ?1"
-        }
-        None => {
-            "SELECT
-                id, from_type, from_id, from_label, to_type, to_id, to_label,
-                edge_type, weight, confidence, evidence
-             FROM graph_edges
-             ORDER BY id"
-        }
-    };
-    let mut statement = connection.prepare(sql)?;
-    let rows = match limit {
-        Some(limit) => statement.query_map(params![limit as i64], map_graph_edge_record)?,
-        None => statement.query_map([], map_graph_edge_record)?,
-    };
-    rows.collect::<rusqlite::Result<Vec<_>>>()
-        .context("failed to list graph edges")
-}
 
-pub fn resolve_graph_node_ref(path: &Path, reference: &str) -> Result<Option<GraphNodeRecord>> {
-    initialize_database(path)?;
-    let connection = Connection::open(path)
-        .with_context(|| format!("failed to open database at {}", path.display()))?;
-    apply_pragmas(&connection)?;
-    resolve_graph_node_ref_connection(&connection, reference)
-}
 
-pub fn resolve_graph_node_ref_read_only(
-    source: &(impl ReadOnlyDbAccess + ?Sized),
-    reference: &str,
-) -> Result<Option<GraphNodeRecord>> {
-    source
-        .with_read_connection(|connection| resolve_graph_node_ref_connection(connection, reference))
-}
-
-fn resolve_graph_node_ref_connection(
-    connection: &Connection,
-    reference: &str,
-) -> Result<Option<GraphNodeRecord>> {
-    let Some((node_type, value)) = reference.split_once(':') else {
-        anyhow::bail!("graph node reference must use type:value syntax");
-    };
-
-    match node_type {
-        "host" => resolve_host_node(connection, value),
-        "user" => resolve_user_node(connection, value),
-        "key" | "public_key" => resolve_public_key_node(connection, value),
-        "sudo_rule" => resolve_sudo_rule_node(connection, value),
-        other => anyhow::bail!("unsupported graph node type: {other}"),
-    }
-}
-
-fn apply_read_only_pragmas(connection: &Connection) -> Result<()> {
-    connection.busy_timeout(std::time::Duration::from_secs(5))?;
-    Ok(())
-}
-
-fn apply_pragmas(connection: &Connection) -> Result<()> {
-    connection.pragma_update(None, "foreign_keys", "ON")?;
-    connection.pragma_update(None, "journal_mode", "WAL")?;
-    connection.pragma_update(None, "synchronous", "NORMAL")?;
-    connection.pragma_update(None, "cache_size", -64000)?;
-    connection.pragma_update(None, "temp_store", "MEMORY")?;
-    connection.busy_timeout(std::time::Duration::from_secs(5))?;
-    Ok(())
-}
-
-fn escape_like_pattern(value: &str) -> String {
-    value
-        .replace('\\', "\\\\")
-        .replace('%', "\\%")
-        .replace('_', "\\_")
-}
-
-fn like_contains_pattern(value: &str) -> String {
-    format!("%{}%", escape_like_pattern(value))
-}
-
-fn apply_migrations(connection: &Connection) -> Result<()> {
-    connection.execute_batch(
-        "CREATE TABLE IF NOT EXISTS schema_migrations (
-            version INTEGER PRIMARY KEY,
-            applied_at TEXT NOT NULL
-        );",
-    )?;
-
-    for (version, sql) in MIGRATIONS {
-        let applied_version = connection
-            .query_row(
-                "SELECT version FROM schema_migrations WHERE version = ?1",
-                params![version],
-                |row| row.get::<_, i64>(0),
-            )
-            .optional()?;
-
-        if applied_version.is_none() {
-            connection.execute_batch(sql)?;
-            connection.execute(
-                "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
-                params![version, Utc::now().to_rfc3339()],
-            )?;
-        }
-    }
-
-    Ok(())
-}
-
-const COUNTABLE_TABLES: &[&str] = &[
-    "hosts",
-    "users",
-    "public_keys",
-    "risks",
-    "raw_evidence",
-    "graph_edges",
-    "known_hosts_entries",
-    "ssh_client_config_entries",
-    "host_aliases",
-    "data_quality_findings",
-    "risk_exceptions",
-    "baselines",
-];
-
-fn count_rows(connection: &Connection, table_name: &str) -> Result<usize> {
-    if !COUNTABLE_TABLES.contains(&table_name) {
-        bail!("unsupported table name for count: {table_name}");
-    }
-    let sql = format!("SELECT COUNT(*) FROM {table_name}");
-    let count = connection.query_row(&sql, [], |row| row.get::<_, i64>(0))?;
-    Ok(count as usize)
-}
 
 fn count_risks_by_severity(connection: &Connection, severity: &str) -> Result<usize> {
     let count = connection.query_row(
@@ -3289,478 +2897,6 @@ fn i64_to_usize(value: i64) -> usize {
     usize::try_from(value).unwrap_or_default()
 }
 
-fn insert_host_user_edges(connection: &Connection) -> Result<()> {
-    connection.execute(
-        "INSERT OR IGNORE INTO graph_edges (
-            from_type, from_id, from_label, to_type, to_id, to_label,
-            edge_type, weight, confidence, evidence
-        )
-        SELECT
-            'HOST',
-            h.id,
-            COALESCE(h.hostname, h.ip_address),
-            'USER',
-            u.id,
-            u.username || '@' || COALESCE(h.hostname, h.ip_address),
-            'HOST_HAS_USER',
-            1,
-            'HIGH',
-            'User account exists on host'
-        FROM hosts h
-        JOIN users u ON u.host_id = h.id",
-        [],
-    )?;
-
-    connection.execute(
-        "INSERT OR IGNORE INTO graph_edges (
-            from_type, from_id, from_label, to_type, to_id, to_label,
-            edge_type, weight, confidence, evidence
-        )
-        SELECT
-            'USER',
-            u.id,
-            u.username || '@' || COALESCE(h.hostname, h.ip_address),
-            'HOST',
-            h.id,
-            COALESCE(h.hostname, h.ip_address),
-            'USER_ON_HOST',
-            1,
-            'HIGH',
-            'User account exists on host'
-        FROM users u
-        JOIN hosts h ON h.id = u.host_id",
-        [],
-    )?;
-
-    Ok(())
-}
-
-fn insert_certificate_authority_edges(connection: &Connection) -> Result<()> {
-    connection.execute(
-        "INSERT OR IGNORE INTO graph_edges (
-            from_type, from_id, from_label, to_type, to_id, to_label,
-            edge_type, weight, confidence, evidence
-        )
-        SELECT
-            'SSH_CA',
-            MIN(pk.id),
-            pk.certificate_signing_ca,
-            'PUBLIC_KEY',
-            pk.id,
-            pk.fingerprint_sha256,
-            'SSH_CA_SIGNED_PUBLIC_KEY',
-            1,
-            'HIGH',
-            'Certificate-based authorized key'
-        FROM public_keys pk
-        WHERE pk.key_type LIKE '%-cert-%'
-          AND pk.certificate_signing_ca IS NOT NULL
-        GROUP BY pk.certificate_signing_ca, pk.id, pk.fingerprint_sha256",
-        [],
-    )?;
-
-    connection.execute(
-        "INSERT OR IGNORE INTO graph_edges (
-            from_type, from_id, from_label, to_type, to_id, to_label,
-            edge_type, weight, confidence, evidence
-        )
-        SELECT
-            'SSH_CA',
-            MIN(pk.id),
-            pk.certificate_signing_ca,
-            'USER',
-            u.id,
-            u.username || '@' || COALESCE(h.hostname, h.ip_address),
-            'SSH_CA_GRANTS_USER_ACCESS',
-            2,
-            'HIGH',
-            COALESCE(ak.source_file, 'authorized_keys')
-        FROM authorized_keys ak
-        JOIN public_keys pk ON pk.id = ak.public_key_id
-        JOIN users u ON u.id = ak.user_id
-        JOIN hosts h ON h.id = ak.host_id
-        WHERE pk.key_type LIKE '%-cert-%'
-          AND pk.certificate_signing_ca IS NOT NULL
-        GROUP BY pk.certificate_signing_ca, u.id, h.hostname, h.ip_address, ak.source_file",
-        [],
-    )?;
-
-    Ok(())
-}
-
-fn insert_public_key_edges(connection: &Connection) -> Result<()> {
-    connection.execute(
-        "INSERT OR IGNORE INTO graph_edges (
-            from_type, from_id, from_label, to_type, to_id, to_label,
-            edge_type, weight, confidence, evidence
-        )
-        SELECT
-            'PUBLIC_KEY',
-            pk.id,
-            pk.fingerprint_sha256,
-            'USER',
-            u.id,
-            u.username || '@' || COALESCE(h.hostname, h.ip_address),
-            'PUBLIC_KEY_CAN_LOGIN_TO_USER',
-            1,
-            'HIGH',
-            COALESCE(ak.source_file, 'authorized_keys') || ':' || COALESCE(ak.line_number, 0)
-        FROM authorized_keys ak
-        JOIN public_keys pk ON pk.id = ak.public_key_id
-        JOIN users u ON u.id = ak.user_id
-        JOIN hosts h ON h.id = ak.host_id",
-        [],
-    )?;
-
-    connection.execute(
-        "INSERT OR IGNORE INTO graph_edges (
-            from_type, from_id, from_label, to_type, to_id, to_label,
-            edge_type, weight, confidence, evidence
-        )
-        SELECT
-            'PUBLIC_KEY',
-            pk.id,
-            pk.fingerprint_sha256,
-            'HOST',
-            h.id,
-            COALESCE(h.hostname, h.ip_address),
-            'PUBLIC_KEY_REUSED_ON_HOST',
-            2,
-            'HIGH',
-            'Public key appears in authorized_keys on host'
-        FROM authorized_keys ak
-        JOIN public_keys pk ON pk.id = ak.public_key_id
-        JOIN hosts h ON h.id = ak.host_id",
-        [],
-    )?;
-
-    Ok(())
-}
-
-fn insert_sudo_edges(connection: &Connection) -> Result<()> {
-    connection.execute(
-        "INSERT OR IGNORE INTO graph_edges (
-            from_type, from_id, from_label, to_type, to_id, to_label,
-            edge_type, weight, confidence, evidence
-        )
-        SELECT
-            'USER',
-            u.id,
-            u.username || '@' || COALESCE(h.hostname, h.ip_address),
-            'SUDO_RULE',
-            sr.id,
-            sr.subject || ' ' || COALESCE(sr.command, '-'),
-            'USER_HAS_SUDO_RULE',
-            1,
-            'HIGH',
-            COALESCE(sr.source_file, 'sudoers') || ':' || COALESCE(sr.line_number, 0)
-        FROM sudo_rules sr
-        JOIN users u ON u.host_id = sr.host_id AND sr.subject_type = 'user' AND sr.subject = u.username
-        JOIN hosts h ON h.id = sr.host_id",
-        [],
-    )?;
-
-    connection.execute(
-        "INSERT OR IGNORE INTO graph_edges (
-            from_type, from_id, from_label, to_type, to_id, to_label,
-            edge_type, weight, confidence, evidence
-        )
-        SELECT
-            'SUDO_RULE',
-            sr.id,
-            sr.subject || ' ' || COALESCE(sr.command, '-'),
-            'HOST',
-            h.id,
-            COALESCE(h.hostname, h.ip_address),
-            'SUDO_RULE_APPLIES_TO_HOST',
-            1,
-            'HIGH',
-            COALESCE(sr.source_file, 'sudoers') || ':' || COALESCE(sr.line_number, 0)
-        FROM sudo_rules sr
-        JOIN hosts h ON h.id = sr.host_id",
-        [],
-    )?;
-
-    connection.execute(
-        "INSERT OR IGNORE INTO graph_edges (
-            from_type, from_id, from_label, to_type, to_id, to_label,
-            edge_type, weight, confidence, evidence
-        )
-        SELECT
-            'USER',
-            u.id,
-            u.username || '@' || COALESCE(h.hostname, h.ip_address),
-            'HOST',
-            h.id,
-            COALESCE(h.hostname, h.ip_address),
-            'USER_HAS_PASSWORDLESS_SUDO',
-            1,
-            'HIGH',
-            COALESCE(sr.source_file, 'sudoers') || ':' || COALESCE(sr.line_number, 0)
-        FROM sudo_rules sr
-        JOIN users u ON u.host_id = sr.host_id AND sr.subject_type = 'user' AND sr.subject = u.username
-        JOIN hosts h ON h.id = sr.host_id
-        WHERE sr.nopasswd = 1",
-        [],
-    )?;
-
-    Ok(())
-}
-
-fn insert_client_config_edges(connection: &Connection) -> Result<()> {
-    connection.execute(
-        "INSERT OR IGNORE INTO graph_edges (
-            from_type, from_id, from_label, to_type, to_id, to_label,
-            edge_type, weight, confidence, evidence
-        )
-        SELECT
-            'HOST',
-            source.id,
-            COALESCE(source.hostname, source.ip_address),
-            'HOST',
-            target.id,
-            COALESCE(target.hostname, target.ip_address),
-            'CLIENT_CONFIG_PROXY_JUMP',
-            2,
-            'MEDIUM',
-            COALESCE(cfg.source_file, 'ssh_config') || ':' || COALESCE(cfg.line_number, 0)
-        FROM ssh_client_config_entries cfg
-        JOIN hosts source ON source.id = cfg.host_id
-        JOIN hosts target
-            ON target.hostname = cfg.proxy_jump
-            OR target.fqdn = cfg.proxy_jump
-            OR target.ip_address = cfg.proxy_jump
-        WHERE cfg.proxy_jump IS NOT NULL",
-        [],
-    )?;
-
-    connection.execute(
-        "INSERT OR IGNORE INTO graph_edges (
-            from_type, from_id, from_label, to_type, to_id, to_label,
-            edge_type, weight, confidence, evidence
-        )
-        SELECT
-            'HOST',
-            source.id,
-            COALESCE(source.hostname, source.ip_address),
-            'HOST',
-            target.id,
-            COALESCE(target.hostname, target.ip_address),
-            'KNOWN_HOSTS_REFERENCE',
-            1,
-            entry.confidence,
-            COALESCE(entry.source_file, 'known_hosts') || ':' || COALESCE(entry.line_number, 0)
-        FROM known_hosts_entries entry
-        JOIN hosts source ON source.id = entry.host_id
-        JOIN hosts target
-            ON target.hostname = entry.known_host
-            OR target.fqdn = entry.known_host
-            OR target.ip_address = entry.known_ip
-        WHERE entry.known_host IS NOT NULL OR entry.known_ip IS NOT NULL",
-        [],
-    )?;
-
-    Ok(())
-}
-
-fn insert_bastion_reachability_edges(connection: &Connection) -> Result<()> {
-    connection.execute(
-        "INSERT OR IGNORE INTO graph_edges (
-            from_type, from_id, from_label, to_type, to_id, to_label,
-            edge_type, weight, confidence, evidence
-        )
-        SELECT
-            'HOST',
-            source.id,
-            COALESCE(source.hostname, source.ip_address),
-            'HOST',
-            bastion.id,
-            COALESCE(bastion.hostname, bastion.ip_address),
-            'BASTION_REACHABILITY',
-            2,
-            'HIGH',
-            'scan via ProxyJump'
-        FROM bastion_reachability br
-        JOIN hosts source ON source.id = br.host_id
-        JOIN hosts bastion ON bastion.id = br.bastion_host_id",
-        [],
-    )?;
-    Ok(())
-}
-
-fn map_graph_edge_record(row: &Row<'_>) -> rusqlite::Result<GraphEdgeRecord> {
-    Ok(GraphEdgeRecord {
-        id: row.get(0)?,
-        from_type: row.get(1)?,
-        from_id: row.get(2)?,
-        from_label: row.get(3)?,
-        to_type: row.get(4)?,
-        to_id: row.get(5)?,
-        to_label: row.get(6)?,
-        edge_type: row.get(7)?,
-        weight: row.get(8)?,
-        confidence: row.get(9)?,
-        evidence: row.get(10)?,
-    })
-}
-
-fn resolve_host_node(connection: &Connection, value: &str) -> Result<Option<GraphNodeRecord>> {
-    if let Ok(host_id) = value.parse::<i64>() {
-        return connection
-            .query_row(
-                "SELECT id, COALESCE(hostname, ip_address) FROM hosts WHERE id = ?1",
-                params![host_id],
-                |row| {
-                    Ok(GraphNodeRecord {
-                        node_type: "HOST".to_string(),
-                        node_id: row.get(0)?,
-                        label: row.get(1)?,
-                    })
-                },
-            )
-            .optional()
-            .context("failed to resolve host graph node");
-    }
-
-    connection
-        .query_row(
-            "SELECT id, COALESCE(hostname, ip_address)
-             FROM hosts
-             WHERE hostname = ?1 OR fqdn = ?1 OR ip_address = ?1
-             ORDER BY port
-             LIMIT 1",
-            params![value],
-            |row| {
-                Ok(GraphNodeRecord {
-                    node_type: "HOST".to_string(),
-                    node_id: row.get(0)?,
-                    label: row.get(1)?,
-                })
-            },
-        )
-        .optional()
-        .context("failed to resolve host graph node")
-}
-
-fn resolve_user_node(connection: &Connection, value: &str) -> Result<Option<GraphNodeRecord>> {
-    if let Ok(user_id) = value.parse::<i64>() {
-        return connection
-            .query_row(
-                "SELECT u.id, u.username || '@' || COALESCE(h.hostname, h.ip_address)
-                 FROM users u
-                 JOIN hosts h ON h.id = u.host_id
-                 WHERE u.id = ?1",
-                params![user_id],
-                |row| {
-                    Ok(GraphNodeRecord {
-                        node_type: "USER".to_string(),
-                        node_id: row.get(0)?,
-                        label: row.get(1)?,
-                    })
-                },
-            )
-            .optional()
-            .context("failed to resolve user graph node");
-    }
-
-    if let Some((username, host)) = value.split_once('@') {
-        return connection
-            .query_row(
-                "SELECT u.id, u.username || '@' || COALESCE(h.hostname, h.ip_address)
-                 FROM users u
-                 JOIN hosts h ON h.id = u.host_id
-                 WHERE u.username = ?1 AND (h.hostname = ?2 OR h.fqdn = ?2 OR h.ip_address = ?2)
-                 LIMIT 1",
-                params![username, host],
-                |row| {
-                    Ok(GraphNodeRecord {
-                        node_type: "USER".to_string(),
-                        node_id: row.get(0)?,
-                        label: row.get(1)?,
-                    })
-                },
-            )
-            .optional()
-            .context("failed to resolve user graph node");
-    }
-
-    connection
-        .query_row(
-            "SELECT u.id, u.username || '@' || COALESCE(h.hostname, h.ip_address)
-             FROM users u
-             JOIN hosts h ON h.id = u.host_id
-             WHERE u.username = ?1
-             ORDER BY h.hostname, h.ip_address
-             LIMIT 1",
-            params![value],
-            |row| {
-                Ok(GraphNodeRecord {
-                    node_type: "USER".to_string(),
-                    node_id: row.get(0)?,
-                    label: row.get(1)?,
-                })
-            },
-        )
-        .optional()
-        .context("failed to resolve user graph node")
-}
-
-fn resolve_public_key_node(
-    connection: &Connection,
-    value: &str,
-) -> Result<Option<GraphNodeRecord>> {
-    if let Ok(public_key_id) = value.parse::<i64>() {
-        return connection
-            .query_row(
-                "SELECT id, fingerprint_sha256 FROM public_keys WHERE id = ?1",
-                params![public_key_id],
-                |row| {
-                    Ok(GraphNodeRecord {
-                        node_type: "PUBLIC_KEY".to_string(),
-                        node_id: row.get(0)?,
-                        label: row.get(1)?,
-                    })
-                },
-            )
-            .optional()
-            .context("failed to resolve public key graph node");
-    }
-
-    connection
-        .query_row(
-            "SELECT id, fingerprint_sha256 FROM public_keys WHERE fingerprint_sha256 = ?1",
-            params![value],
-            |row| {
-                Ok(GraphNodeRecord {
-                    node_type: "PUBLIC_KEY".to_string(),
-                    node_id: row.get(0)?,
-                    label: row.get(1)?,
-                })
-            },
-        )
-        .optional()
-        .context("failed to resolve public key graph node")
-}
-
-fn resolve_sudo_rule_node(connection: &Connection, value: &str) -> Result<Option<GraphNodeRecord>> {
-    let rule_id = value
-        .parse::<i64>()
-        .context("sudo_rule reference must use an integer id")?;
-    connection
-        .query_row(
-            "SELECT id, subject || ' ' || COALESCE(command, '-') FROM sudo_rules WHERE id = ?1",
-            params![rule_id],
-            |row| {
-                Ok(GraphNodeRecord {
-                    node_type: "SUDO_RULE".to_string(),
-                    node_id: row.get(0)?,
-                    label: row.get(1)?,
-                })
-            },
-        )
-        .optional()
-        .context("failed to resolve sudo rule graph node")
-}
 
 pub fn resolve_host_id(path: &Path, target: &str) -> Result<Option<i64>> {
     Ok(get_host_detail(path, target)?.map(|detail| detail.host.id))
@@ -3802,6 +2938,7 @@ pub fn update_host_hardening_scores(path: &Path, scores: &[(i64, i64)]) -> Resul
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn insert_external_finding(
     path: &Path,
     host_id: Option<i64>,
@@ -3834,16 +2971,12 @@ pub fn insert_external_finding(
     Ok(())
 }
 
-pub fn record_bastion_reachability(
-    path: &Path,
+fn insert_bastion_reachability(
+    connection: &Connection,
     host_id: i64,
     bastion_host_id: i64,
     scan_run_id: i64,
 ) -> Result<()> {
-    initialize_database(path)?;
-    let connection = Connection::open(path)
-        .with_context(|| format!("failed to open database at {}", path.display()))?;
-    apply_pragmas(&connection)?;
     connection.execute(
         "INSERT OR IGNORE INTO bastion_reachability (host_id, bastion_host_id, scan_run_id)
          VALUES (?1, ?2, ?3)",
@@ -3927,20 +3060,3 @@ fn map_raw_evidence_bundle_row(
     })
 }
 
-#[cfg(test)]
-mod pool_tests {
-    use super::*;
-
-    #[test]
-    fn read_only_pool_matches_path_reads() {
-        let temp_dir = tempfile::tempdir().expect("tempdir");
-        let db_path = temp_dir.path().join("pool.db");
-        initialize_database(&db_path).expect("initialize");
-        let pool = ReadOnlyPool::open(&db_path).expect("pool");
-
-        let from_path = load_database_stats_read_only(db_path.as_path()).expect("path stats");
-        let from_pool = load_database_stats_read_only(&pool).expect("pool stats");
-        assert_eq!(from_path.hosts, from_pool.hosts);
-        assert_eq!(from_path.risks, from_pool.risks);
-    }
-}

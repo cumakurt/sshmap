@@ -3,3 +3,11 @@
 *.db-shm
 *.db-wal
 .env
+.codex
+.agents
+.vscode
+dashboard/test-results/
+dashboard/playwright-report/
+
+
+

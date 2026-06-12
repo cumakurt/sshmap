@@ -712,12 +712,21 @@ pub struct GraphEdgeRecord {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct GraphListRecord {
+    pub edges: Vec<GraphEdgeRecord>,
+    pub truncated: bool,
+    pub total_edges: usize,
+    pub edge_limit: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct GraphPathRecord {
     pub found: bool,
     pub from: GraphNodeRecord,
     pub to: GraphNodeRecord,
     pub nodes: Vec<GraphNodeRecord>,
     pub edges: Vec<GraphEdgeRecord>,
+    pub edges_truncated: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -730,6 +739,8 @@ pub struct BlastRadiusRecord {
     pub reachable_sudo_rules: Vec<GraphNodeRecord>,
     pub host_count: usize,
     pub passwordless_sudo_host_count: usize,
+    pub sudo_path_to_root_score: Option<i64>,
+    pub edges_truncated: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -738,6 +749,7 @@ pub struct GraphPathsRecord {
     pub to: GraphNodeRecord,
     pub paths: Vec<GraphPathRecord>,
     pub truncated: bool,
+    pub edges_truncated: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -749,6 +761,7 @@ pub struct KeyCompromiseBlastRadiusRecord {
     pub passwordless_sudo_hosts: Vec<GraphNodeRecord>,
     pub host_count: usize,
     pub total_path_weight: i64,
+    pub edges_truncated: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

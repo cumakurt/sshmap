@@ -169,6 +169,8 @@ pub async fn get_user(
     Path(username): Path<String>,
 ) -> Result<Json<crate::models::UserDetailRecord>, ApiError> {
     let username = required_param(&username, "username", API_FILTER_PARAM_MAX_BYTES)?;
+    crate::security::validate_exception_username(Some(username))
+        .map_err(ApiError::bad_request_from_anyhow)?;
     let Some(user) = crate::db::get_user_detail_read_only(&state.read_pool, username)? else {
         return Err(ApiError::not_found("user not found"));
     };
@@ -227,12 +229,17 @@ pub async fn list_risks(
         ));
     }
 
+    let code = optional_param(query.code, "code", API_FILTER_PARAM_MAX_BYTES)?
+        .map(|value| value.to_ascii_uppercase());
+    if let Some(code) = &code {
+        crate::security::validate_risk_code(code).map_err(ApiError::bad_request_from_anyhow)?;
+    }
+
     Ok(Json(crate::db::list_risks_read_only(
         &state.read_pool,
         &RiskQuery {
             severity,
-            code: optional_param(query.code, "code", API_FILTER_PARAM_MAX_BYTES)?
-                .map(|value| value.to_ascii_uppercase()),
+            code,
             limit: query.limit.unwrap_or(100).min(API_LIMIT),
         },
     )?))
@@ -256,11 +263,15 @@ pub struct GraphListQuery {
 pub async fn list_graph(
     State(state): State<AppState>,
     Query(query): Query<GraphListQuery>,
-) -> Result<Json<Vec<crate::models::GraphEdgeRecord>>, ApiError> {
-    Ok(Json(crate::db::list_graph_edges_read_only_limited(
-        &state.read_pool,
-        query.limit.unwrap_or(1000).min(API_LIMIT),
-    )?))
+) -> Result<Json<crate::models::GraphListRecord>, ApiError> {
+    let edge_limit = query.limit.unwrap_or(1000).min(API_LIMIT);
+    let slice = crate::db::load_graph_edges_read_only(&state.read_pool, edge_limit)?;
+    Ok(Json(crate::models::GraphListRecord {
+        edges: slice.edges,
+        truncated: slice.truncated,
+        total_edges: slice.total_edges,
+        edge_limit: slice.edge_limit,
+    }))
 }
 
 #[derive(Debug, Deserialize)]
@@ -275,6 +286,10 @@ pub async fn find_path(
 ) -> Result<Json<crate::models::GraphPathRecord>, ApiError> {
     let from = required_param(&query.from, "from", API_REF_PARAM_MAX_BYTES)?;
     let to = required_param(&query.to, "to", API_REF_PARAM_MAX_BYTES)?;
+    crate::security::validate_graph_node_reference(from)
+        .map_err(ApiError::bad_request_from_anyhow)?;
+    crate::security::validate_graph_node_reference(to)
+        .map_err(ApiError::bad_request_from_anyhow)?;
 
     let Some(start) = crate::db::resolve_graph_node_ref_read_only(&state.read_pool, from)? else {
         return Err(ApiError::not_found("source graph node not found"));
@@ -282,8 +297,13 @@ pub async fn find_path(
     let Some(end) = crate::db::resolve_graph_node_ref_read_only(&state.read_pool, to)? else {
         return Err(ApiError::not_found("destination graph node not found"));
     };
-    let edges = crate::db::list_graph_edges_for_api_analysis(&state.read_pool)?;
-    Ok(Json(graph::find_path(&edges, start, end)))
+    let slice = crate::db::load_graph_edges_for_api_analysis(&state.read_pool)?;
+    Ok(Json(graph::find_path_with_truncation(
+        &slice.edges,
+        start,
+        end,
+        slice.truncated,
+    )))
 }
 
 #[derive(Debug, Deserialize)]
@@ -296,17 +316,20 @@ pub async fn blast_radius(
     Query(query): Query<BlastRadiusQuery>,
 ) -> Result<Json<crate::models::BlastRadiusRecord>, ApiError> {
     let username = required_param(&query.user, "user", API_FILTER_PARAM_MAX_BYTES)?;
+    crate::security::validate_exception_username(Some(username))
+        .map_err(ApiError::bad_request_from_anyhow)?;
 
     let entry_points =
         crate::db::list_user_nodes_by_username_read_only(&state.read_pool, username)?;
     if entry_points.is_empty() {
         return Err(ApiError::not_found("user not found"));
     }
-    let edges = crate::db::list_graph_edges_for_api_analysis(&state.read_pool)?;
-    Ok(Json(graph::compute_blast_radius(
-        &edges,
+    let slice = crate::db::load_graph_edges_for_api_analysis(&state.read_pool)?;
+    Ok(Json(graph::compute_blast_radius_with_truncation(
+        &slice.edges,
         &entry_points,
         username,
+        slice.truncated,
     )))
 }
 
@@ -464,6 +487,7 @@ pub async fn get_remediation(
     Path(code): Path<String>,
 ) -> Result<Json<crate::models::RemediationRecord>, ApiError> {
     let code = required_param(&code, "code", API_FILTER_PARAM_MAX_BYTES)?;
+    crate::security::validate_risk_code(code).map_err(ApiError::bad_request_from_anyhow)?;
     let Some(record) = crate::risk::remediation_for_code(code) else {
         return Err(ApiError::not_found("remediation not found"));
     };
@@ -545,7 +569,7 @@ pub async fn operations_metrics(
 
 pub async fn hardening_report(
     State(state): State<AppState>,
-) -> Result<Json<Vec<crate::hardening::HostHardeningScore>>, ApiError> {
+) -> Result<Json<crate::hardening::HardeningReport>, ApiError> {
     let hosts = crate::db::list_hosts_read_only(&state.read_pool, API_LIMIT)?;
     let risks = crate::db::list_risks_read_only(
         &state.read_pool,
@@ -555,7 +579,7 @@ pub async fn hardening_report(
             limit: API_LIMIT,
         },
     )?;
-    Ok(Json(crate::hardening::compute_inventory_hardening(
+    Ok(Json(crate::hardening::build_hardening_report(
         &hosts, &risks,
     )))
 }
@@ -573,18 +597,23 @@ pub async fn find_paths(
 ) -> Result<Json<crate::models::GraphPathsRecord>, ApiError> {
     let from = required_param(&query.from, "from", API_REF_PARAM_MAX_BYTES)?;
     let to = required_param(&query.to, "to", API_REF_PARAM_MAX_BYTES)?;
+    crate::security::validate_graph_node_reference(from)
+        .map_err(ApiError::bad_request_from_anyhow)?;
+    crate::security::validate_graph_node_reference(to)
+        .map_err(ApiError::bad_request_from_anyhow)?;
     let Some(start) = crate::db::resolve_graph_node_ref_read_only(&state.read_pool, from)? else {
         return Err(ApiError::not_found("source graph node not found"));
     };
     let Some(end) = crate::db::resolve_graph_node_ref_read_only(&state.read_pool, to)? else {
         return Err(ApiError::not_found("destination graph node not found"));
     };
-    let edges = crate::db::list_graph_edges_for_api_analysis(&state.read_pool)?;
+    let slice = crate::db::load_graph_edges_for_api_analysis(&state.read_pool)?;
     Ok(Json(graph::find_all_paths(
-        &edges,
+        &slice.edges,
         start,
         end,
         query.limit.unwrap_or(10).min(100),
+        slice.truncated,
     )))
 }
 
@@ -598,17 +627,20 @@ pub async fn key_blast_radius(
     Query(query): Query<KeyBlastRadiusQuery>,
 ) -> Result<Json<crate::models::KeyCompromiseBlastRadiusRecord>, ApiError> {
     let fingerprint = required_param(&query.fingerprint, "fingerprint", API_REF_PARAM_MAX_BYTES)?;
+    crate::security::validate_exception_fingerprint(Some(fingerprint))
+        .map_err(ApiError::bad_request_from_anyhow)?;
     let normalized = fingerprint.strip_prefix("key:").unwrap_or(fingerprint);
     let entry_points =
         crate::db::list_public_key_nodes_by_fingerprint_read_only(&state.read_pool, normalized)?;
     if entry_points.is_empty() {
         return Err(ApiError::not_found("public key not found"));
     }
-    let edges = crate::db::list_graph_edges_for_api_analysis(&state.read_pool)?;
-    Ok(Json(graph::compute_key_compromise_blast_radius(
-        &edges,
+    let slice = crate::db::load_graph_edges_for_api_analysis(&state.read_pool)?;
+    Ok(Json(graph::key_compromise_blast_radius_with_truncation(
+        &slice.edges,
         normalized,
         &entry_points,
+        slice.truncated,
     )))
 }
 
@@ -706,5 +738,17 @@ mod tests {
         let error = optional_param(Some(value), "q", API_FILTER_PARAM_MAX_BYTES)
             .expect_err("oversized param");
         assert_eq!(error.status, StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn rejects_invalid_risk_code_filter() {
+        let error = crate::security::validate_risk_code("bad code").expect_err("invalid code");
+        assert!(error.to_string().contains("risk code"));
+    }
+
+    #[test]
+    fn rejects_invalid_remediation_code() {
+        let error = crate::security::validate_risk_code("bad-code").expect_err("invalid code");
+        assert!(error.to_string().contains("risk code"));
     }
 }

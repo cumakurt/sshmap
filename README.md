@@ -299,8 +299,11 @@ SSH_CA_GRANTS_USER_ACCESS
 | `paths --from ... --to ...` | Enumerate multiple directed paths (limit configurable) |
 | `blast-radius --user ...` | All hosts, keys, and passwordless-sudo targets reachable from a username |
 | `key-blast-radius --fingerprint SHA256:...` | Compromise simulation from a public key fingerprint |
+| `--full-graph` on path / paths / blast-radius / key-blast-radius | Raise the analysis edge cap from 10,000 to 100,000 for large inventories |
 
 Node references use `type:value` syntax, e.g. `host:web01`, `user:deploy@web01`, `key:SHA256:...`.
+
+Graph path and blast-radius analysis load up to **10,000 edges** by default (CLI and API). Responses include `edges_truncated` when the inventory exceeds the cap. Use `--full-graph` on CLI commands or set `SSHMAP_GRAPH_EDGE_LIMIT` on the server for larger graphs.
 
 **When to use:** Lateral movement analysis, key compromise impact, or explaining access chains to stakeholders.
 
@@ -361,6 +364,8 @@ The REST API exposes the same report at `GET /api/compliance?framework=CIS`. Fra
 | Bastion reachability edges | Automatic when scanning via `--proxy-jump` | `BASTION_REACHABILITY` graph edges |
 | Scoped API tokens | `serve --read-token read:... --write-token write:...` | Separate read vs write API credentials |
 | Read-only manifest CI test | `cargo test remote_command_manifest_is_read_only` | Guards remote command allowlist in unit tests |
+| Graph edge limits | `--full-graph` / `SSHMAP_GRAPH_EDGE_LIMIT` | Bounded path and blast-radius analysis (default 10,000 edges) |
+| Dependency audit | `cargo audit` in CI | Tracks advisories; see `scripts/check-rustsec-rsa.sh` for native transport |
 
 ```bash
 sshmap watch --interval 3600 --webhook-url https://hooks.example.com/sshmap --baseline weekly --db sshmap.db
@@ -633,6 +638,14 @@ cd dashboard && npm ci && npm run build
 sshmap serve --db sshmap.db --listen 127.0.0.1:8080 --read-only --dashboard dashboard/dist
 ```
 
+Dashboard tests (Vitest unit tests + shell E2E smoke against the built bundle):
+
+```bash
+cd dashboard && npm test && npm run test:e2e
+```
+
+Optional browser E2E with Playwright: `npm run test:e2e:playwright` (requires Chromium).
+
 API token (required on non-loopback addresses; optional on loopback unless `SSHMAP_REQUIRE_TOKEN=1`):
 
 ```bash
@@ -640,7 +653,7 @@ sshmap serve --db sshmap.db --listen 127.0.0.1:8080 --read-only --token "$SSHMAP
 sshmap serve --db sshmap.db --listen 127.0.0.1:8080 --read-only --require-token --token "$SSHMAP_TOKEN"
 ```
 
-Send the token in the `X-SSHMap-Token` header. The React dashboard stores it in browser local storage from the Tools page. `/health` is unauthenticated; `/api/*` routes are rate-limited per client IP. Graph analysis endpoints cap loaded edges at 10,000 for API requests (CLI graph commands allow up to 100,000).
+Send the token in the `X-SSHMap-Token` header. The React dashboard stores it in browser local storage from the Tools page. `/health` is unauthenticated; `/api/*` routes are rate-limited per client IP. Graph analysis endpoints load up to **10,000 edges** by default (same as CLI); override with `SSHMAP_GRAPH_EDGE_LIMIT` on the server or `--full-graph` on CLI path commands.
 
 Write API endpoints are disabled by default. To create baselines or exceptions through HTTP, start the server with an explicit token and `--allow-write-api`:
 
@@ -696,6 +709,18 @@ DELETE /api/exceptions/{id}
 
 See `docs/api.md` and `docs/dashboard.md` for full reference.
 
+### API migration (v1.2.0)
+
+Breaking response shape changes for dashboard and automation clients:
+
+- `GET /api/graph` returns `{ edges, truncated, total_edges, edge_limit }` instead of a bare edge array.
+- `GET /api/hardening` returns `{ hosts, summary, control_count }` instead of a bare host score array.
+- Path and blast-radius analysis responses include `edges_truncated` when the graph edge cap is hit.
+
+See `CHANGELOG.md` for details.
+
+Graph analysis uses a default cap of **10,000 edges** (CLI and API). Use `--full-graph` on `path`, `paths`, `blast-radius`, and `key-blast-radius` for up to 100,000 edges, or set `SSHMAP_GRAPH_EDGE_LIMIT` on the server.
+
 ---
 
 ## End-to-End Workflow
@@ -717,6 +742,7 @@ sshmap risks list --severity critical --db customer.db
 sshmap keys reuse --db customer.db
 sshmap graph export --format dot --output customer-graph.dot --db customer.db
 sshmap path --from key:SHA256:exampleFingerprint --to host:web01 --db customer.db
+sshmap path --from user:deploy@web01 --to host:web02 --full-graph --db customer.db
 
 sshmap baseline create --name customer-initial --db customer.db
 sshmap diff --from customer-initial --to latest --db customer.db
@@ -729,6 +755,8 @@ sshmap report create --format html --output customer-report.html --db customer.d
 ## Documentation Index
 
 ```text
+CHANGELOG.md
+SECURITY.md
 docs/getting-started.md
 docs/scope.md
 docs/discovery.md
@@ -747,7 +775,9 @@ docs/architecture.md
 docs/development/
 ```
 
-Start with `docs/getting-started.md` and `docs/architecture.md`.
+Start with `docs/getting-started.md` and `docs/architecture.md`. API breaking changes in v1.2.0 are summarized in [CHANGELOG.md](CHANGELOG.md) and the [API migration](#api-migration-v120) section above.
+
+The SQLite layer lives under `src/db/` (`pool`, `migrations`, `graph`, `store` modules). Run `cargo test`, `cargo clippy --all-targets -- -D warnings`, and `cargo audit` before releases.
 
 ---
 

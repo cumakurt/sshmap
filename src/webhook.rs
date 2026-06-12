@@ -49,6 +49,7 @@ pub async fn send_webhook(url: &str, payload: &WebhookPayload) -> anyhow::Result
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn build_alert_payload(
     event: &str,
     database: &str,

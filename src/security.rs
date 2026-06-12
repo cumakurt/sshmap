@@ -6,6 +6,9 @@ const MAX_FINGERPRINT_BYTES: usize = 256;
 const MAX_RISK_CODE_BYTES: usize = 256;
 const MAX_EXCEPTION_REASON_BYTES: usize = 512;
 const MAX_COMPLIANCE_FRAMEWORK_BYTES: usize = 32;
+const MAX_BASELINE_NAME_BYTES: usize = 128;
+const MAX_GRAPH_NODE_REFERENCE_BYTES: usize = 512;
+const GRAPH_NODE_TYPES: &[&str] = &["host", "user", "key", "public_key", "sudo_rule"];
 
 pub fn validate_webhook_url(url: &str) -> Result<()> {
     let trimmed = url.trim();
@@ -36,6 +39,33 @@ pub fn validate_webhook_url(url: &str) -> Result<()> {
         bail!("webhook URL host is not allowed");
     }
 
+    Ok(())
+}
+
+pub fn validate_baseline_name(name: &str, allow_latest: bool) -> Result<()> {
+    let name = name.trim();
+    if name.is_empty() {
+        bail!("baseline name cannot be empty");
+    }
+    if name.len() > MAX_BASELINE_NAME_BYTES {
+        bail!("baseline name is too long");
+    }
+    if name.chars().any(char::is_control) {
+        bail!("baseline name cannot contain control characters");
+    }
+    if name.eq_ignore_ascii_case("latest") {
+        if allow_latest {
+            return Ok(());
+        }
+        bail!("latest is a reserved baseline name");
+    }
+    if !name.chars().all(|character| {
+        character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.')
+    }) {
+        bail!(
+            "baseline name must contain only ASCII letters, digits, hyphen, underscore, or period"
+        );
+    }
     Ok(())
 }
 
@@ -141,6 +171,60 @@ pub fn validate_compliance_framework(framework: &str) -> Result<()> {
     {
         bail!("compliance framework parameter contains invalid characters");
     }
+    Ok(())
+}
+
+pub fn validate_graph_node_reference(reference: &str) -> Result<()> {
+    let reference = reference.trim();
+    if reference.is_empty() {
+        bail!("graph node reference cannot be empty");
+    }
+    if reference.len() > MAX_GRAPH_NODE_REFERENCE_BYTES {
+        bail!("graph node reference is too long");
+    }
+    if reference.chars().any(char::is_control) {
+        bail!("graph node reference cannot contain control characters");
+    }
+
+    let Some((node_type, value)) = reference.split_once(':') else {
+        bail!("graph node reference must use type:value syntax");
+    };
+    if !GRAPH_NODE_TYPES.contains(&node_type) {
+        bail!("unsupported graph node type: {node_type}");
+    }
+
+    let value = value.trim();
+    if value.is_empty() {
+        bail!("graph node value cannot be empty");
+    }
+
+    match node_type {
+        "user" => {
+            if let Some((username, host)) = value.split_once('@') {
+                crate::transport::auth::validate_ssh_username(username.trim())
+                    .map_err(|error| anyhow::anyhow!(error))?;
+                if host.trim().is_empty() {
+                    bail!("graph user reference host cannot be empty");
+                }
+            } else {
+                crate::transport::auth::validate_ssh_username(value)
+                    .map_err(|error| anyhow::anyhow!(error))?;
+            }
+        }
+        "host" => {
+            if value.parse::<i64>().is_err() {
+                validate_import_host_identifier(value)?;
+            }
+        }
+        "key" | "public_key" => validate_exception_fingerprint(Some(value))?,
+        "sudo_rule" => {
+            if value.parse::<i64>().is_err() && value.len() > MAX_FINGERPRINT_BYTES {
+                bail!("sudo_rule reference is too long");
+            }
+        }
+        _ => {}
+    }
+
     Ok(())
 }
 
@@ -358,6 +442,26 @@ mod tests {
         validate_import_host_identifier("web01.example.com").unwrap();
         validate_import_host_identifier("[2001:db8::1]:2222").unwrap();
         assert!(validate_import_host_identifier("bad host").is_err());
+    }
+
+    #[test]
+    fn validates_graph_node_references() {
+        validate_graph_node_reference("host:10.0.0.1").unwrap();
+        validate_graph_node_reference("user:deploy@web01.example.com").unwrap();
+        validate_graph_node_reference("key:SHA256:abcdef").unwrap();
+        assert!(validate_graph_node_reference("bad").is_err());
+        assert!(validate_graph_node_reference("host:").is_err());
+        assert!(validate_graph_node_reference("unknown:1").is_err());
+        assert!(validate_graph_node_reference("user:bad user@host").is_err());
+    }
+
+    #[test]
+    fn validates_baseline_names() {
+        validate_baseline_name("2026-q1-audit", false).unwrap();
+        validate_baseline_name("latest", true).unwrap();
+        assert!(validate_baseline_name("latest", false).is_err());
+        assert!(validate_baseline_name("bad name", false).is_err());
+        assert!(validate_baseline_name(&"x".repeat(256), false).is_err());
     }
 
     #[test]

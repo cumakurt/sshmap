@@ -858,6 +858,10 @@ pub struct PathArgs {
     #[arg(long)]
     pub weighted: bool,
 
+    /// Load up to 100,000 graph edges for analysis (default: 10,000)
+    #[arg(long)]
+    pub full_graph: bool,
+
     #[arg(long)]
     pub json: bool,
 
@@ -877,6 +881,10 @@ pub struct PathsArgs {
     #[arg(long, default_value_t = 10)]
     pub limit: usize,
 
+    /// Load up to 100,000 graph edges for analysis (default: 10,000)
+    #[arg(long)]
+    pub full_graph: bool,
+
     #[arg(long)]
     pub json: bool,
 
@@ -890,6 +898,10 @@ pub struct BlastRadiusArgs {
     #[arg(long)]
     pub user: String,
 
+    /// Load up to 100,000 graph edges for analysis (default: 10,000)
+    #[arg(long)]
+    pub full_graph: bool,
+
     #[arg(long)]
     pub json: bool,
 
@@ -902,6 +914,10 @@ pub struct KeyBlastRadiusArgs {
     /// Public key fingerprint (key:SHA256:... or SHA256:...)
     #[arg(long)]
     pub fingerprint: String,
+
+    /// Load up to 100,000 graph edges for analysis (default: 10,000)
+    #[arg(long)]
+    pub full_graph: bool,
 
     #[arg(long)]
     pub json: bool,

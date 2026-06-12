@@ -14,10 +14,10 @@ pub struct EvidenceBundleOptions<'a> {
 
 pub fn export_evidence_bundle(options: EvidenceBundleOptions<'_>) -> Result<PathBuf> {
     db::initialize_database(options.db_path)?;
-    if let Some(parent) = options.output.parent() {
-        if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent)?;
-        }
+    if let Some(parent) = options.output.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent)?;
     }
 
     let summary = crate::server::build_api_summary(options.db_path)?;

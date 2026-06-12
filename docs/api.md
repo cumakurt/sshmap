@@ -101,9 +101,12 @@ curl 'http://127.0.0.1:8080/api/risks?severity=CRITICAL&code=SSH_ROOT_LOGIN&limi
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/graph` | Access graph edges (see query parameters below) |
+| GET | `/api/graph` | Access graph edges with truncation metadata (see query parameters below) |
 | GET | `/api/path?from=...&to=...` | Shortest directed path between graph nodes |
+| GET | `/api/paths?from=...&to=...` | Multiple paths between graph nodes |
 | GET | `/api/blast-radius?user=...` | Reachable hosts from a user's graph entry points |
+| GET | `/api/key-blast-radius?fingerprint=...` | Reachable hosts/users from a compromised key |
+| GET | `/api/hardening` | Per-host hardening scores with summary buckets |
 | GET | `/api/scan-runs` | Recorded discovery, scan, local-scan, and import runs |
 | GET | `/api/scan-runs/{id-or-uuid}` | One run with audit events |
 | GET | `/api/diff?from=...&to=latest` | Baseline drift comparison |
@@ -114,9 +117,39 @@ curl 'http://127.0.0.1:8080/api/risks?severity=CRITICAL&code=SSH_ROOT_LOGIN&limi
 |-----------|------|-------------|
 | `limit` | integer | Maximum edges returned (default `1000`, max `10000`) |
 
-`from`, `to`, and `user` parameters on path/blast-radius endpoints must be non-empty. Empty values return HTTP 400.
+Response shape:
 
-Graph node references use the same `type:id` or label forms accepted by `sshmap graph path`.
+```json
+{
+  "edges": [/* GraphEdgeRecord */],
+  "truncated": false,
+  "total_edges": 1234,
+  "edge_limit": 1000
+}
+```
+
+`truncated` is `true` when `total_edges` exceeds `edge_limit`.
+
+### Graph analysis truncation
+
+Path, paths, blast-radius, and key-blast-radius endpoints analyze up to **10,000** graph edges server-side by default (aligned with the CLI default). When the inventory contains more edges, responses include `"edges_truncated": true` and results may be incomplete.
+
+- CLI: pass `--full-graph` on `path`, `paths`, `blast-radius`, or `key-blast-radius` to raise the cap to **100,000** edges.
+- Server: set `SSHMAP_GRAPH_EDGE_LIMIT` to override the analysis cap for API path/blast-radius handlers.
+
+`GET /api/hardening` returns:
+
+```json
+{
+  "hosts": [/* HostHardeningScore */],
+  "summary": { "excellent": 0, "good": 0, "fair": 0, "poor": 0 },
+  "control_count": 42
+}
+```
+
+`from`, `to`, and `user` parameters on path/blast-radius endpoints must be non-empty and pass graph-node validation. Invalid references return HTTP 400. Empty values return HTTP 400.
+
+Graph node references use `type:value` syntax (`host:`, `user:`, `key:`, `sudo_rule:`) or the same label forms accepted by `sshmap graph path`.
 
 ## Optional write API
 

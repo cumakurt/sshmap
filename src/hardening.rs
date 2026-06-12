@@ -94,3 +94,72 @@ pub fn hardening_summary(scores: &[HostHardeningScore]) -> BTreeMap<String, usiz
 pub fn control_count() -> usize {
     compliance_controls().len()
 }
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HardeningReport {
+    pub hosts: Vec<HostHardeningScore>,
+    pub summary: BTreeMap<String, usize>,
+    pub control_count: usize,
+}
+
+pub fn build_hardening_report(hosts: &[HostRecord], risks: &[RiskRecord]) -> HardeningReport {
+    let scores = compute_inventory_hardening(hosts, risks);
+    HardeningReport {
+        summary: hardening_summary(&scores),
+        control_count: control_count(),
+        hosts: scores,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::{HostRecord, RiskRecord};
+
+    #[test]
+    fn builds_hardening_report_with_summary_and_controls() {
+        let hosts = vec![HostRecord {
+            id: 1,
+            hostname: Some("web01".to_string()),
+            fqdn: None,
+            ip_address: "10.0.0.10".to_string(),
+            port: 22,
+            os_family: None,
+            os_version: None,
+            environment: None,
+            criticality: None,
+            ssh_open: true,
+            ssh_banner: None,
+            source: "scan".to_string(),
+            first_seen: "2026-01-01".to_string(),
+            last_seen: "2026-01-02".to_string(),
+            user_count: 1,
+            risk_count: 1,
+        }];
+        let risks = vec![RiskRecord {
+            id: 1,
+            host_id: Some(1),
+            hostname: Some("web01".to_string()),
+            ip_address: Some("10.0.0.10".to_string()),
+            username: None,
+            public_key_fingerprint: None,
+            risk_code: "SSH_PASSWORD_AUTH_ENABLED".to_string(),
+            severity: "HIGH".to_string(),
+            score: 80,
+            confidence: "HIGH".to_string(),
+            title: "Password auth".to_string(),
+            description: None,
+            impact: None,
+            evidence: None,
+            recommendation: None,
+            status: "OPEN".to_string(),
+            first_seen: "2026-01-01".to_string(),
+            last_seen: "2026-01-01".to_string(),
+        }];
+
+        let report = build_hardening_report(&hosts, &risks);
+        assert_eq!(report.hosts.len(), 1);
+        assert!(report.control_count > 0);
+        assert_eq!(report.summary.values().sum::<usize>(), 1);
+    }
+}

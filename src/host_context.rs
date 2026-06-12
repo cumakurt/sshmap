@@ -2,7 +2,6 @@ use std::collections::BTreeMap;
 
 #[derive(Debug, Clone)]
 pub struct HostContext {
-    pub host_id: i64,
     pub environment: Option<String>,
     pub criticality: Option<String>,
     pub ssh_open: bool,
@@ -74,7 +73,6 @@ pub fn build_host_context_map(
             (
                 host.host_id,
                 HostContext {
-                    host_id: host.host_id,
                     environment: host.environment.clone(),
                     criticality: host.criticality.clone(),
                     ssh_open: host.ssh_open,
@@ -116,7 +114,6 @@ mod tests {
     #[test]
     fn escalates_production_exposed_hosts() {
         let context = HostContext {
-            host_id: 1,
             environment: Some("production".to_string()),
             criticality: Some("high".to_string()),
             ssh_open: true,
@@ -134,7 +131,6 @@ mod tests {
     #[test]
     fn downgrades_lab_hosts() {
         let context = HostContext {
-            host_id: 1,
             environment: Some("lab".to_string()),
             criticality: Some("low".to_string()),
             ssh_open: false,

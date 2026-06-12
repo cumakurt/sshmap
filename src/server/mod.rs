@@ -17,14 +17,22 @@ pub struct ServerConfig {
     pub listen: SocketAddr,
     pub read_only: bool,
     pub allow_write_api: bool,
-    pub token: Option<String>,
+    pub read_token: Option<String>,
+    pub write_token: Option<String>,
     pub dashboard_dir: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResolvedApiTokens {
+    pub read_token: Option<String>,
+    pub write_token: Option<String>,
 }
 
 #[derive(Clone)]
 pub struct AppState {
     pub db_path: PathBuf,
-    pub token: Option<String>,
+    pub read_token: Option<String>,
+    pub write_token: Option<String>,
     pub allow_write_api: bool,
 }
 
@@ -41,12 +49,11 @@ pub async fn run_server(config: ServerConfig) -> Result<()> {
         validate_dashboard_dir(dashboard_dir)?;
     }
 
-    let token = normalize_api_token(config.token)?;
-    if config.allow_write_api && token.is_none() {
-        bail!("--token is required when --allow-write-api is enabled");
+    if config.allow_write_api && config.write_token.is_none() && config.read_token.is_none() {
+        bail!("--token or --write-token is required when --allow-write-api is enabled");
     }
 
-    if token.is_none() {
+    if config.read_token.is_none() && config.write_token.is_none() {
         if !config.listen.ip().is_loopback() {
             bail!(
                 "--token is required when listening on a non-loopback address ({})",
@@ -60,7 +67,8 @@ pub async fn run_server(config: ServerConfig) -> Result<()> {
 
     let state = AppState {
         db_path: config.db_path.clone(),
-        token: token.clone(),
+        read_token: config.read_token.clone(),
+        write_token: config.write_token.clone(),
         allow_write_api: config.allow_write_api,
     };
 
@@ -82,7 +90,7 @@ pub async fn run_server(config: ServerConfig) -> Result<()> {
     } else {
         println!("Dashboard: embedded HTML");
     }
-    if token.is_some() {
+    if config.read_token.is_some() || config.write_token.is_some() {
         println!("API token authentication: enabled");
     }
     if config.allow_write_api {
@@ -112,8 +120,50 @@ fn normalize_api_token(token: Option<String>) -> Result<Option<String>> {
     Ok(Some(token))
 }
 
+pub fn resolve_api_tokens(
+    legacy: Option<String>,
+    read_token: Option<String>,
+    write_token: Option<String>,
+) -> Result<ResolvedApiTokens> {
+    let legacy_parsed = parse_scoped_token(legacy)?;
+    let read_parsed = parse_scoped_token(read_token)?;
+    let write_parsed = parse_scoped_token(write_token)?;
+
+    let mut read = None;
+    let mut write = None;
+
+    for parsed in [legacy_parsed, read_parsed, write_parsed].into_iter().flatten() {
+        match parsed.1 {
+            "read" => read = Some(parsed.0),
+            "write" => write = Some(parsed.0),
+            _ => {
+                read = Some(parsed.0.clone());
+                write = Some(parsed.0);
+            }
+        }
+    }
+
+    Ok(ResolvedApiTokens {
+        read_token: read,
+        write_token: write,
+    })
+}
+
+fn parse_scoped_token(value: Option<String>) -> Result<Option<(String, &'static str)>> {
+    let Some(value) = normalize_api_token(value)? else {
+        return Ok(None);
+    };
+    if let Some(secret) = value.strip_prefix("read:") {
+        Ok(Some((secret.to_string(), "read")))
+    } else if let Some(secret) = value.strip_prefix("write:") {
+        Ok(Some((secret.to_string(), "write")))
+    } else {
+        Ok(Some((value, "both")))
+    }
+}
+
 pub fn build_app(state: AppState, dashboard_dir: Option<PathBuf>) -> Router {
-    let protected = Router::new()
+    let read_protected = Router::new()
         .route("/api/summary", get(api::summary))
         .route("/api/hosts", get(api::list_hosts))
         .route("/api/hosts/{id}", get(api::get_host))
@@ -130,11 +180,8 @@ pub fn build_app(state: AppState, dashboard_dir: Option<PathBuf>) -> Router {
         .route("/api/scan-runs", get(api::list_scan_runs))
         .route("/api/scan-runs/{id}", get(api::get_scan_run))
         .route("/api/baselines", get(api::list_baselines))
-        .route("/api/baselines", post(api::create_baseline))
         .route("/api/diff", get(api::diff_baselines))
         .route("/api/exceptions", get(api::list_exceptions))
-        .route("/api/exceptions", post(api::add_exception))
-        .route("/api/exceptions/{id}", delete(api::remove_exception))
         .route("/api/known-hosts", get(api::list_known_hosts))
         .route("/api/ssh-config", get(api::list_ssh_config))
         .route("/api/host-aliases", get(api::list_host_aliases))
@@ -144,14 +191,26 @@ pub fn build_app(state: AppState, dashboard_dir: Option<PathBuf>) -> Router {
         .route("/api/operations-metrics", get(api::operations_metrics))
         .route("/api/paths", get(api::find_paths))
         .route("/api/key-blast-radius", get(api::key_blast_radius))
+        .route("/api/hardening", get(api::hardening_report))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
-            api::auth_middleware,
+            api::read_auth_middleware,
+        ))
+        .with_state(state.clone());
+
+    let write_protected = Router::new()
+        .route("/api/baselines", post(api::create_baseline))
+        .route("/api/exceptions", post(api::add_exception))
+        .route("/api/exceptions/{id}", delete(api::remove_exception))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            api::write_auth_middleware,
         ))
         .with_state(state.clone());
 
     let mut app = Router::new()
-        .merge(protected)
+        .merge(read_protected)
+        .merge(write_protected)
         .route("/health", get(api::health));
 
     if let Some(dashboard_dir) = dashboard_dir {
@@ -262,7 +321,8 @@ mod tests {
         let app = build_app(
             AppState {
                 db_path: db_path.clone(),
-                token: Some("secret-token".to_string()),
+                read_token: Some("secret-token".to_string()),
+                write_token: Some("secret-token".to_string()),
                 allow_write_api: false,
             },
             None,

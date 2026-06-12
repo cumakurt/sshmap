@@ -139,7 +139,93 @@ pub fn default_remote_commands() -> Vec<RemoteCommand> {
             command: "cat /root/.ssh/config 2>/dev/null",
             sudo_policy: SudoPolicy::Require,
         },
+        RemoteCommand {
+            name: "pam_sshd",
+            evidence_type: "pam_config",
+            command: "cat /etc/pam.d/sshd 2>/dev/null",
+            sudo_policy: SudoPolicy::Prefer,
+        },
+        RemoteCommand {
+            name: "pam_common_auth",
+            evidence_type: "pam_config",
+            command: "cat /etc/pam.d/common-auth 2>/dev/null",
+            sudo_policy: SudoPolicy::Prefer,
+        },
+        RemoteCommand {
+            name: "nsswitch",
+            evidence_type: "nsswitch",
+            command: "cat /etc/nsswitch.conf 2>/dev/null",
+            sudo_policy: SudoPolicy::Never,
+        },
     ]
+}
+
+const FORBIDDEN_REMOTE_COMMAND_FRAGMENTS: &[&str] = &[
+    " rm ",
+    " mv ",
+    " cp ",
+    " touch ",
+    " chmod ",
+    " chown ",
+    " useradd ",
+    " userdel ",
+    " shutdown ",
+    " reboot ",
+    " systemctl ",
+    " service ",
+    " apt ",
+    " yum ",
+    " dnf ",
+    " pip ",
+    " curl ",
+    " wget ",
+    " tee ",
+    " dd ",
+    " mkfs ",
+    " mount ",
+    " umount ",
+];
+
+pub fn validate_read_only_command_manifest() -> Result<(), String> {
+    for command in default_remote_commands() {
+        let rendered = command
+            .render(false)
+            .or_else(|| command.render(true))
+            .ok_or_else(|| format!("command {} cannot be rendered", command.name))?;
+        if let Err(reason) = is_read_only_command(&rendered) {
+            return Err(format!(
+                "command {} renders non read-only shell: {reason}: {rendered}",
+                command.name
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn is_read_only_command(command: &str) -> Result<(), &'static str> {
+    let trimmed = command.trim();
+    if trimmed.is_empty() {
+        return Err("empty command");
+    }
+    if trimmed.contains('<') {
+        return Err("shell input redirection is not allowed");
+    }
+    if trimmed.contains('>') && !trimmed.contains("2>/dev/null") && !trimmed.contains("2> /dev/null") {
+        return Err("shell output redirection is not allowed");
+    }
+    if trimmed.contains("$(`") || trimmed.contains("${") {
+        return Err("command substitution is not allowed");
+    }
+    let lower = format!(" {trimmed} ").to_ascii_lowercase();
+    for fragment in FORBIDDEN_REMOTE_COMMAND_FRAGMENTS {
+        if lower.contains(fragment) {
+            return Err("forbidden command fragment detected");
+        }
+    }
+    if lower.contains(" passwd") && !lower.contains("getent passwd") {
+        return Err("interactive passwd command is not allowed");
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -171,6 +257,11 @@ mod tests {
         assert!(evidence_types.contains(&"hosts_file"));
         assert!(evidence_types.contains(&"host_metadata"));
         assert!(evidence_types.contains(&"sshd_effective_config"));
+    }
+
+    #[test]
+    fn remote_command_manifest_is_read_only() {
+        validate_read_only_command_manifest().expect("read-only manifest");
     }
 
     #[test]

@@ -94,11 +94,17 @@ fn parse_authorized_key_line(
     let permits_agent_forwarding = !option_value.contains("no-agent-forwarding");
     let permits_x11_forwarding = !option_value.contains("no-X11-forwarding");
 
-    let certificate_signing_ca = if key_type.ends_with("-cert-v01@openssh.com") {
-        certificate_signing_ca_fingerprint(&key_bytes)
-    } else {
-        None
-    };
+    let (certificate_signing_ca, certificate_valid_after, certificate_valid_before) =
+        if key_type.ends_with("-cert-v01@openssh.com") {
+            let metadata = parse_certificate_metadata(&key_bytes);
+            (
+                metadata.signing_ca_fingerprint,
+                Some(metadata.valid_after as i64),
+                Some(metadata.valid_before as i64),
+            )
+        } else {
+            (None, None, None)
+        };
 
     Ok(ParsedAuthorizedKey {
         host_id,
@@ -110,6 +116,8 @@ fn parse_authorized_key_line(
             key_comment: comment,
             normalized_public_key: format!("{key_type} {key_blob}"),
             certificate_signing_ca,
+            certificate_valid_after,
+            certificate_valid_before,
         },
         source_file: source_file.to_string(),
         line_number: line_number as i64,
@@ -123,27 +131,49 @@ fn parse_authorized_key_line(
     })
 }
 
-fn certificate_signing_ca_fingerprint(cert_bytes: &[u8]) -> Option<String> {
+struct CertificateMetadata {
+    signing_ca_fingerprint: Option<String>,
+    valid_after: u64,
+    valid_before: u64,
+}
+
+fn parse_certificate_metadata(cert_bytes: &[u8]) -> CertificateMetadata {
     let mut cursor = KeyBlobCursor::new(cert_bytes);
-    cursor.read_string().ok()?;
-    cursor.read_string().ok()?;
-    cursor.read_u64().ok()?;
-    cursor.read_u32().ok()?;
-    cursor.read_string().ok()?;
-    cursor.read_string_list().ok()?;
-    cursor.read_u64().ok()?;
-    cursor.read_u64().ok()?;
-    cursor.read_options().ok()?;
-    cursor.read_options().ok()?;
-    cursor.read_string().ok()?;
-    let signing_key_bytes = cursor.read_bytes().ok()?;
-    if signing_key_bytes.is_empty() {
-        return None;
+    let mut metadata = CertificateMetadata {
+        signing_ca_fingerprint: None,
+        valid_after: 0,
+        valid_before: 0,
+    };
+    if cursor.read_string().is_err() {
+        return metadata;
     }
-    Some(format!(
-        "SHA256:{}",
-        STANDARD_NO_PAD.encode(Sha256::digest(signing_key_bytes))
-    ))
+    if cursor.read_string().is_err() {
+        return metadata;
+    }
+    metadata.valid_after = cursor.read_u64().unwrap_or(0);
+    if cursor.read_u32().is_err() {
+        return metadata;
+    }
+    if cursor.read_string().is_err() {
+        return metadata;
+    }
+    if cursor.read_string_list().is_err() {
+        return metadata;
+    }
+    metadata.valid_before = cursor.read_u64().unwrap_or(0);
+    let _ = cursor.read_u64();
+    let _ = cursor.read_options();
+    let _ = cursor.read_options();
+    let _ = cursor.read_string();
+    if let Ok(signing_key_bytes) = cursor.read_bytes() {
+        if !signing_key_bytes.is_empty() {
+            metadata.signing_ca_fingerprint = Some(format!(
+                "SHA256:{}",
+                STANDARD_NO_PAD.encode(Sha256::digest(signing_key_bytes))
+            ));
+        }
+    }
+    metadata
 }
 
 fn key_bits(key_type: &str, key_bytes: &[u8]) -> Option<i64> {

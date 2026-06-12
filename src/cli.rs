@@ -205,6 +205,16 @@ pub enum Command {
     /// Generate bash or zsh shell completion scripts
     #[command(long_about = crate::cli_help::COMPLETION_LONG)]
     Completion(CompletionArgs),
+
+    /// Periodic analysis and optional webhook alerting
+    #[command(long_about = "Run analyze on an interval and optionally POST summary webhooks.")]
+    Watch(WatchArgs),
+
+    /// Host hardening score reporting
+    Hardening {
+        #[command(subcommand)]
+        command: HardeningCommand,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -368,6 +378,10 @@ pub struct ScanArgs {
     /// Bastion chain for OpenSSH ProxyJump (-J); comma-separated for multiple hops
     #[arg(long, short = 'J', value_name = "HOST")]
     pub proxy_jump: Option<String>,
+
+    /// Print planned remote commands without connecting or writing evidence
+    #[arg(long)]
+    pub dry_run: bool,
 
     #[arg(long, default_value = "sshmap.db", help = "SQLite database file path")]
     pub db: PathBuf,
@@ -916,6 +930,10 @@ pub enum ImportCommand {
     Sudoers(ImportHostFileArgs),
     /// Import host inventory from a prior SSHMap JSON report
     Json(ImportFileArgs),
+    /// Import findings from an ssh-audit JSON report
+    SshAudit(ImportAutoArgs),
+    /// Import findings from a Lynis dat/report file
+    Lynis(ImportAutoArgs),
 }
 
 #[derive(Debug, Args)]
@@ -1010,6 +1028,8 @@ pub struct ImportAuthorizedKeysArgs {
 pub enum EnrichCommand {
     /// Resolve hostnames and optional reverse DNS into host aliases
     Dns(EnrichDnsArgs),
+    /// Apply cloud/CMDB tags from a JSON or YAML mapping file
+    Cloud(EnrichCloudArgs),
 }
 
 #[derive(Debug, Args)]
@@ -1021,6 +1041,15 @@ pub struct EnrichDnsArgs {
     /// Also attempt reverse lookup through getent hosts
     #[arg(long)]
     pub reverse: bool,
+
+    #[arg(long, default_value = "sshmap.db", help = "SQLite database file path")]
+    pub db: PathBuf,
+}
+
+#[derive(Debug, Args)]
+pub struct EnrichCloudArgs {
+    #[arg(long, value_name = "PATH")]
+    pub file: PathBuf,
 
     #[arg(long, default_value = "sshmap.db", help = "SQLite database file path")]
     pub db: PathBuf,
@@ -1046,6 +1075,14 @@ pub struct ServeArgs {
     /// API token sent via X-SSHMap-Token header (required on non-loopback binds)
     #[arg(long, help = "Require X-SSHMap-Token header for /api/* routes")]
     pub token: Option<String>,
+
+    /// Read-scoped API token (format read:secret or plain secret for read-only access)
+    #[arg(long, value_name = "TOKEN")]
+    pub read_token: Option<String>,
+
+    /// Write-scoped API token required for POST/DELETE endpoints (format write:secret)
+    #[arg(long, value_name = "TOKEN")]
+    pub write_token: Option<String>,
 
     /// Enable write API endpoints for baselines and exceptions (requires --token)
     #[arg(long)]
@@ -1136,6 +1173,12 @@ pub enum ExportCommand {
     KnownHosts(ExportKnownHostsArgs),
     /// Export SSH client config entries as JSON or CSV
     SshConfig(ExportSshConfigArgs),
+    /// Export open risks as SARIF 2.1.0 JSON
+    Sarif(ExportSarifArgs),
+    /// Export remediation snippets as Ansible or shell
+    Remediation(ExportRemediationArgs),
+    /// Export an evidence audit bundle (.zip)
+    Bundle(ExportBundleArgs),
 }
 
 #[derive(Debug, Args)]
@@ -1216,6 +1259,81 @@ pub struct ExportSshConfigArgs {
 
     #[arg(long, value_name = "PATH")]
     pub output: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+pub struct WatchArgs {
+    #[arg(long, default_value = "sshmap.db", help = "SQLite database file path")]
+    pub db: PathBuf,
+
+    #[arg(long, default_value_t = 3600)]
+    pub interval: u64,
+
+    #[arg(long, value_name = "URL")]
+    pub webhook_url: Option<String>,
+
+    #[arg(long, value_name = "NAME")]
+    pub baseline: Option<String>,
+
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum HardeningCommand {
+    /// List per-host hardening scores
+    Report(HardeningReportArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct HardeningReportArgs {
+    #[arg(long, default_value = "sshmap.db", help = "SQLite database file path")]
+    pub db: PathBuf,
+
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct ExportSarifArgs {
+    #[arg(long, default_value = "sshmap.db", help = "SQLite database file path")]
+    pub db: PathBuf,
+
+    #[arg(long, value_name = "PATH")]
+    pub output: Option<PathBuf>,
+
+    #[arg(long, default_value_t = 10_000)]
+    pub limit: usize,
+}
+
+#[derive(Debug, Args)]
+pub struct ExportRemediationArgs {
+    #[arg(long, default_value = "ansible")]
+    pub format: String,
+
+    #[arg(long, default_value = "sshmap.db", help = "SQLite database file path")]
+    pub db: PathBuf,
+
+    #[arg(long, value_name = "PATH")]
+    pub output: Option<PathBuf>,
+
+    #[arg(long, default_value_t = 10_000)]
+    pub limit: usize,
+}
+
+#[derive(Debug, Args)]
+pub struct ExportBundleArgs {
+    #[arg(long, default_value = "sshmap.db", help = "SQLite database file path")]
+    pub db: PathBuf,
+
+    #[arg(long, value_name = "PATH")]
+    pub output: PathBuf,
+
+    #[arg(long)]
+    pub host: Option<String>,
+
+    #[arg(long)]
+    pub include_raw_evidence: bool,
 }
 
 #[derive(Debug, Args)]

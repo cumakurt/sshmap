@@ -1,6 +1,6 @@
 [package]
 name = "sshmap"
-version = "1.1.0"
+version = "1.2.0"
 edition = "2024"
 description = "Agentless SSH exposure management and access graph CLI"
 license = "GPL-3.0-or-later"
@@ -29,6 +29,7 @@ tower-http = { version = "0.6", features = ["trace", "fs"] }
 serde_yaml = "0.9"
 clap_complete = "4"
 russh = "0.61.2"
+zip = "2"
 
 [dev-dependencies]
 tempfile = "3"

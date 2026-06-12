@@ -117,8 +117,10 @@ pub struct NormalizedAnalysis {
     pub groups: Vec<ParsedGroup>,
     pub host_metadata: Vec<ParsedHostMetadata>,
     pub sshd_config_entries: Vec<ParsedSshdConfigEntry>,
+    pub sshd_match_blocks: Vec<ParsedSshdMatchBlock>,
     pub authorized_keys: Vec<ParsedAuthorizedKey>,
     pub sudo_rules: Vec<ParsedSudoRule>,
+    pub pam_entries: Vec<ParsedPamEntry>,
     pub known_hosts_entries: Vec<ParsedKnownHostEntry>,
     pub ssh_client_config_entries: Vec<ParsedSshClientConfigEntry>,
     pub host_aliases: Vec<ParsedHostAlias>,
@@ -291,6 +293,26 @@ pub struct ParsedHostMetadata {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
+pub struct ParsedSshdMatchBlock {
+    pub host_id: i64,
+    pub source_file: String,
+    pub line_number: i64,
+    pub criteria: String,
+    pub directives: Vec<(String, String)>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct ParsedPamEntry {
+    pub host_id: i64,
+    pub source_file: String,
+    pub line_number: i64,
+    pub service: String,
+    pub module_type: String,
+    pub control: String,
+    pub module_path: String,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub struct ParsedSshdConfigEntry {
     pub host_id: i64,
     pub key: String,
@@ -308,6 +330,8 @@ pub struct ParsedPublicKey {
     pub key_comment: Option<String>,
     pub normalized_public_key: String,
     pub certificate_signing_ca: Option<String>,
+    pub certificate_valid_after: Option<i64>,
+    pub certificate_valid_before: Option<i64>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]

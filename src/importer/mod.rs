@@ -3,7 +3,9 @@ pub mod csv;
 pub mod evidence;
 pub mod hosts_file;
 pub mod known_hosts;
+pub mod lynis;
 pub mod nmap;
+pub mod ssh_audit;
 
 use crate::db;
 use crate::models::ImportSummary;
@@ -23,6 +25,8 @@ pub enum ImportKind {
     SshdConfig,
     AuthorizedKeys,
     Sudoers,
+    SshAudit,
+    Lynis,
     Json,
 }
 
@@ -89,6 +93,14 @@ pub fn run_import(request: ImportRequest) -> Result<ImportSummary> {
             &request.db_path,
         ),
         ImportKind::Json => evidence::import_json_report(&request.file, &request.db_path),
+        ImportKind::SshAudit => ssh_audit::import_ssh_audit_report(
+            &request.file,
+            &request.db_path,
+            request.host.as_deref(),
+        ),
+        ImportKind::Lynis => {
+            lynis::import_lynis_report(&request.file, &request.db_path, request.host.as_deref())
+        }
     }
 }
 

@@ -222,6 +222,10 @@ pub fn generate_risks_with_enrichment(
         policy,
     ));
     risks.extend(enrichment::generate_server_host_key_risks(enrichment_input));
+    risks.extend(generate_pam_risks(analysis));
+    risks.extend(generate_match_block_risks(analysis));
+    risks.extend(generate_certificate_expiry_risks(analysis));
+    risks.extend(generate_sudo_escalation_path_risks(analysis));
     enrichment::apply_context_scoring(&mut risks, enrichment_input.hosts);
     policy::apply_policy(risks, policy)
 }
@@ -663,6 +667,222 @@ fn weak_key_risk(entry: &ParsedAuthorizedKey) -> Option<GeneratedRisk> {
     }
 
     None
+}
+
+fn generate_certificate_expiry_risks(analysis: &NormalizedAnalysis) -> Vec<GeneratedRisk> {
+    let now = chrono::Utc::now().timestamp();
+    let soon = now + 14 * 86_400;
+    analysis
+        .authorized_keys
+        .iter()
+        .filter_map(|entry| {
+            let valid_before = entry.public_key.certificate_valid_before?;
+            if valid_before == 0 {
+                return None;
+            }
+            if valid_before < now {
+                return Some(GeneratedRisk {
+                    host_id: Some(entry.host_id),
+                    username: Some(entry.username.clone()),
+                    public_key_fingerprint: Some(entry.public_key.fingerprint_sha256.clone()),
+                    risk_code: "SSH_CERTIFICATE_EXPIRED".to_string(),
+                    severity: "HIGH".to_string(),
+                    score: 82,
+                    confidence: "HIGH".to_string(),
+                    title: "SSH certificate in authorized_keys has expired".to_string(),
+                    description: "An authorized_keys certificate is past its valid-before timestamp.".to_string(),
+                    impact: "Expired certificates may indicate stale access grants or broken rotation workflows.".to_string(),
+                    evidence: format!(
+                        "{}:{} valid_before={valid_before}",
+                        entry.source_file, entry.line_number
+                    ),
+                    recommendation: "Remove expired certificates and reissue credentials through the SSH CA.".to_string(),
+                });
+            }
+            if valid_before <= soon {
+                return Some(GeneratedRisk {
+                    host_id: Some(entry.host_id),
+                    username: Some(entry.username.clone()),
+                    public_key_fingerprint: Some(entry.public_key.fingerprint_sha256.clone()),
+                    risk_code: "SSH_CERTIFICATE_EXPIRING_SOON".to_string(),
+                    severity: "MEDIUM".to_string(),
+                    score: 55,
+                    confidence: "HIGH".to_string(),
+                    title: "SSH certificate in authorized_keys expires soon".to_string(),
+                    description: "An authorized_keys certificate will expire within 14 days.".to_string(),
+                    impact: "Imminent expiry can cause sudden SSH access loss or emergency bypass changes.".to_string(),
+                    evidence: format!(
+                        "{}:{} valid_before={valid_before}",
+                        entry.source_file, entry.line_number
+                    ),
+                    recommendation: "Rotate the certificate before expiry and monitor CA issuance.".to_string(),
+                });
+            }
+            None
+        })
+        .collect()
+}
+
+fn generate_pam_risks(analysis: &NormalizedAnalysis) -> Vec<GeneratedRisk> {
+    let mut risks = Vec::new();
+    for entry in &analysis.pam_entries {
+        let module = entry.module_path.to_ascii_lowercase();
+        if entry.module_type != "nsswitch" && module.contains("nullok") {
+            risks.push(GeneratedRisk {
+                host_id: Some(entry.host_id),
+                username: None,
+                public_key_fingerprint: None,
+                risk_code: "PAM_NULLOK_ENABLED".to_string(),
+                severity: "HIGH".to_string(),
+                score: 78,
+                confidence: "HIGH".to_string(),
+                title: "PAM stack allows null passwords".to_string(),
+                description: "A PAM module is configured with nullok.".to_string(),
+                impact: "Accounts with empty passwords may authenticate when nullok is in effect.".to_string(),
+                evidence: format!(
+                    "{}:{} {} {} {}",
+                    entry.source_file,
+                    entry.line_number,
+                    entry.service,
+                    entry.module_type,
+                    entry.module_path
+                ),
+                recommendation: "Remove nullok from PAM modules and enforce password or key-only SSH access.".to_string(),
+            });
+        }
+        if entry.service == "sshd" && module.contains("pam_unix.so") && !module.contains("pam_sss") {
+            risks.push(GeneratedRisk {
+                host_id: Some(entry.host_id),
+                username: None,
+                public_key_fingerprint: None,
+                risk_code: "PAM_SSHD_PASSWORD_STACK".to_string(),
+                severity: "MEDIUM".to_string(),
+                score: 45,
+                confidence: "MEDIUM".to_string(),
+                title: "SSHD PAM stack includes local password authentication".to_string(),
+                description: "The sshd PAM stack references pam_unix.".to_string(),
+                impact: "Password-based SSH authentication may remain available depending on sshd settings.".to_string(),
+                evidence: format!(
+                    "{}:{} {}",
+                    entry.source_file, entry.line_number, entry.module_path
+                ),
+                recommendation: "Confirm PasswordAuthentication is disabled and align PAM with key-only SSH policy.".to_string(),
+            });
+        }
+        if entry.module_type == "nsswitch"
+            && entry.service == "passwd"
+            && entry.module_path.contains("compat")
+        {
+            risks.push(GeneratedRisk {
+                host_id: Some(entry.host_id),
+                username: None,
+                public_key_fingerprint: None,
+                risk_code: "PAM_LEGACY_NSSWITCH_COMPAT".to_string(),
+                severity: "LOW".to_string(),
+                score: 30,
+                confidence: "MEDIUM".to_string(),
+                title: "nsswitch passwd uses legacy compat source".to_string(),
+                description: "nsswitch.conf references compat for passwd lookups.".to_string(),
+                impact: "Legacy NSS sources can complicate account governance and central auth migration.".to_string(),
+                evidence: format!(
+                    "{}:{} passwd {}",
+                    entry.source_file, entry.line_number, entry.module_path
+                ),
+                recommendation: "Migrate passwd lookups to files sss or other supported enterprise sources.".to_string(),
+            });
+        }
+    }
+    risks
+}
+
+fn generate_match_block_risks(analysis: &NormalizedAnalysis) -> Vec<GeneratedRisk> {
+    let mut risks = Vec::new();
+    for block in &analysis.sshd_match_blocks {
+        for (key, value) in &block.directives {
+            let key_lower = key.to_ascii_lowercase();
+            let value_lower = value.to_ascii_lowercase();
+            if key_lower == "permitrootlogin" && (value_lower == "yes" || value_lower == "prohibit-password") {
+                risks.push(GeneratedRisk {
+                    host_id: Some(block.host_id),
+                    username: None,
+                    public_key_fingerprint: None,
+                    risk_code: "SSH_MATCH_PERMIT_ROOT_LOGIN".to_string(),
+                    severity: "HIGH".to_string(),
+                    score: 82,
+                    confidence: "HIGH".to_string(),
+                    title: "Match block enables root SSH login".to_string(),
+                    description: format!(
+                        "Match {} overrides PermitRootLogin to {value_lower}.",
+                        block.criteria
+                    ),
+                    impact: "Match blocks can re-enable root SSH for specific users, groups, or networks.".to_string(),
+                    evidence: format!(
+                        "{}:{} Match {}",
+                        block.source_file, block.line_number, block.criteria
+                    ),
+                    recommendation: "Remove root login exceptions from Match blocks unless tightly scoped and audited.".to_string(),
+                });
+            }
+            if key_lower == "passwordauthentication" && value_lower == "yes" {
+                risks.push(GeneratedRisk {
+                    host_id: Some(block.host_id),
+                    username: None,
+                    public_key_fingerprint: None,
+                    risk_code: "SSH_MATCH_PASSWORD_AUTH".to_string(),
+                    severity: "HIGH".to_string(),
+                    score: 80,
+                    confidence: "HIGH".to_string(),
+                    title: "Match block enables SSH password authentication".to_string(),
+                    description: format!(
+                        "Match {} sets PasswordAuthentication yes.",
+                        block.criteria
+                    ),
+                    impact: "Match blocks can expose password authentication to broader audiences than intended.".to_string(),
+                    evidence: format!(
+                        "{}:{} Match {}",
+                        block.source_file, block.line_number, block.criteria
+                    ),
+                    recommendation: "Restrict password authentication to narrow Match criteria or disable it.".to_string(),
+                });
+            }
+        }
+    }
+    risks
+}
+
+fn generate_sudo_escalation_path_risks(analysis: &NormalizedAnalysis) -> Vec<GeneratedRisk> {
+    const ESCALATION_COMMANDS: &[&str] = &["/bin/su", "/usr/bin/sudo", "/bin/bash", "/usr/bin/bash"];
+    analysis
+        .sudo_rules
+        .iter()
+        .filter(|rule| {
+            rule.nopasswd
+                && rule
+                    .command
+                    .as_deref()
+                    .is_some_and(|command| ESCALATION_COMMANDS.iter().any(|needle| command.contains(needle)))
+        })
+        .map(|rule| GeneratedRisk {
+            host_id: Some(rule.host_id),
+            username: (rule.subject_type == "user").then(|| rule.subject.clone()),
+            public_key_fingerprint: None,
+            risk_code: "SUDO_PATH_TO_ROOT".to_string(),
+            severity: "CRITICAL".to_string(),
+            score: 92,
+            confidence: "HIGH".to_string(),
+            title: "Passwordless sudo provides a short path to root".to_string(),
+            description: "A sudoers rule grants NOPASSWD access to a shell escalation command.".to_string(),
+            impact: "SSH access to the subject can become immediate root access.".to_string(),
+            evidence: format!(
+                "{}:{} grants {} NOPASSWD:{}",
+                rule.source_file,
+                rule.line_number,
+                rule.subject,
+                rule.command.as_deref().unwrap_or("ALL")
+            ),
+            recommendation: "Remove NOPASSWD for su, sudo, and shell binaries.".to_string(),
+        })
+        .collect()
 }
 
 fn generate_sudo_risks(analysis: &NormalizedAnalysis) -> Vec<GeneratedRisk> {
@@ -1252,6 +1472,8 @@ mod tests {
                 key_comment: None,
                 normalized_public_key: format!("ssh-ed25519 {fingerprint}"),
                 certificate_signing_ca: None,
+                certificate_valid_after: None,
+                certificate_valid_before: None,
             },
             source_file: format!("/home/{username}/.ssh/authorized_keys"),
             line_number: 1,

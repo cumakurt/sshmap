@@ -39,23 +39,53 @@ fn constant_time_eq(left: &str, right: &str) -> bool {
     diff == 0
 }
 
-pub async fn auth_middleware(
+pub async fn read_auth_middleware(
     State(state): State<AppState>,
     request: Request<axum::body::Body>,
     next: Next,
 ) -> Response {
-    if let Some(expected) = &state.token {
-        let authorized = request
-            .headers()
-            .get("X-SSHMap-Token")
-            .and_then(|value| value.to_str().ok())
-            .is_some_and(|value| constant_time_eq(value, expected));
-        if !authorized {
-            return (StatusCode::UNAUTHORIZED, "invalid or missing API token").into_response();
-        }
+    if !authorize_request(&state, &request, false) {
+        return (StatusCode::UNAUTHORIZED, "invalid or missing API token").into_response();
     }
-
     next.run(request).await
+}
+
+pub async fn write_auth_middleware(
+    State(state): State<AppState>,
+    request: Request<axum::body::Body>,
+    next: Next,
+) -> Response {
+    if !authorize_request(&state, &request, true) {
+        return (StatusCode::UNAUTHORIZED, "invalid or missing write API token").into_response();
+    }
+    next.run(request).await
+}
+
+fn authorize_request(state: &AppState, request: &Request<axum::body::Body>, require_write: bool) -> bool {
+    if state.read_token.is_none() && state.write_token.is_none() {
+        return true;
+    }
+    let Some(provided) = request
+        .headers()
+        .get("X-SSHMap-Token")
+        .and_then(|value| value.to_str().ok())
+    else {
+        return false;
+    };
+    if require_write {
+        return state
+            .write_token
+            .as_deref()
+            .is_some_and(|expected| constant_time_eq(provided, expected));
+    }
+    state
+        .read_token
+        .as_deref()
+        .is_some_and(|expected| constant_time_eq(provided, expected))
+        || state
+            .write_token
+            .as_deref()
+            .is_some_and(|expected| constant_time_eq(provided, expected))
 }
 
 pub async fn summary(
@@ -487,6 +517,23 @@ pub async fn operations_metrics(
     State(state): State<AppState>,
 ) -> Result<Json<crate::models::OperationsMetricsRecord>, ApiError> {
     Ok(Json(crate::db::load_operations_metrics(&state.db_path)?))
+}
+
+pub async fn hardening_report(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<crate::hardening::HostHardeningScore>>, ApiError> {
+    let hosts = crate::db::list_hosts_read_only(&state.db_path, API_LIMIT)?;
+    let risks = crate::db::list_risks_read_only(
+        &state.db_path,
+        &RiskQuery {
+            severity: None,
+            code: None,
+            limit: API_LIMIT,
+        },
+    )?;
+    Ok(Json(crate::hardening::compute_inventory_hardening(
+        &hosts, &risks,
+    )))
 }
 
 #[derive(Debug, Deserialize)]

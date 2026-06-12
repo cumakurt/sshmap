@@ -55,6 +55,7 @@ pub fn run_analysis(
             risks = exceptions::apply_exceptions(risks, &exceptions);
             let summary = analysis.summary(raw_evidence.len(), risks.len());
             db::replace_risks(db_path, &risks)?;
+            persist_hardening_scores(db_path)?;
             summary
         }
         AnalyzeScope::All => {
@@ -67,12 +68,30 @@ pub fn run_analysis(
             db::update_hostnames_from_evidence(db_path)?;
             db::rebuild_graph_edges(db_path)?;
             db::refresh_data_quality_findings(db_path)?;
+            persist_hardening_scores(db_path)?;
             summary
         }
     };
 
     db::record_analysis_finished(db_path)?;
     Ok(summary)
+}
+
+fn persist_hardening_scores(db_path: &Path) -> Result<()> {
+    let hosts = db::list_hosts(db_path, 10_000)?;
+    let risks = db::list_risks(
+        db_path,
+        &crate::models::RiskQuery {
+            severity: None,
+            code: None,
+            limit: 10_000,
+        },
+    )?;
+    let scores = crate::hardening::compute_inventory_hardening(&hosts, &risks)
+        .into_iter()
+        .map(|score| (score.host_id, score.score))
+        .collect::<Vec<_>>();
+    db::update_host_hardening_scores(db_path, &scores)
 }
 
 fn generate_risks_with_db_context(
@@ -150,7 +169,33 @@ fn build_normalized_analysis(raw_evidence: &[RawEvidenceForAnalysis]) -> Normali
                             evidence.host_id,
                             &section.source_file,
                         ));
+                    analysis.sshd_match_blocks.extend(
+                        parser::match_blocks::parse_sshd_match_blocks(
+                            &section.content,
+                            evidence.host_id,
+                            &section.source_file,
+                        ),
+                    );
                 }
+            }
+            "pam_config" => {
+                for section in split_file_sections(
+                    &evidence.content,
+                    default_source_file(&evidence.source, evidence.evidence_type.as_str()),
+                ) {
+                    analysis.pam_entries.extend(parser::pam::parse_pam_config(
+                        &section.content,
+                        evidence.host_id,
+                        &section.source_file,
+                    ));
+                }
+            }
+            "nsswitch" => {
+                analysis.pam_entries.extend(parser::pam::parse_nsswitch(
+                    &evidence.content,
+                    evidence.host_id,
+                    default_source_file(&evidence.source, evidence.evidence_type.as_str()),
+                ));
             }
             "sshd_effective_config" => {
                 analysis.sshd_config_entries.extend(

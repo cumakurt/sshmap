@@ -4,6 +4,8 @@ pub mod group;
 pub mod host_metadata;
 pub mod hosts_file;
 pub mod known_hosts;
+pub mod match_blocks;
+pub mod pam;
 pub mod passwd;
 pub mod registry;
 pub mod ssh_config;

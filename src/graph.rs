@@ -41,9 +41,32 @@ pub fn edge_traversal_weight(edge: &GraphEdgeRecord) -> i64 {
         "USER_ON_HOST" | "HOST_HAS_USER" => 3,
         "PUBLIC_KEY_REUSED_ON_HOST" => 4,
         "USER_HAS_SUDO_RULE" | "SUDO_RULE_APPLIES_TO_HOST" => 5,
-        "CLIENT_CONFIG_PROXY_JUMP" => 6,
+        "CLIENT_CONFIG_PROXY_JUMP" | "BASTION_REACHABILITY" => 6,
         _ => edge.weight.max(1),
     }
+}
+
+pub fn sudo_path_to_root_score(edges: &[GraphEdgeRecord], username: &str) -> Option<i64> {
+    let start = GraphNodeRecord {
+        node_type: "USER".to_string(),
+        node_id: 0,
+        label: username.to_string(),
+    };
+    let goal = GraphNodeRecord {
+        node_type: "USER".to_string(),
+        node_id: 0,
+        label: "root".to_string(),
+    };
+    let path = find_weighted_path(edges, start, goal);
+    if path.edges.is_empty() {
+        return None;
+    }
+    Some(
+        path.edges
+            .iter()
+            .map(edge_traversal_weight)
+            .sum::<i64>(),
+    )
 }
 
 pub fn find_weighted_path(

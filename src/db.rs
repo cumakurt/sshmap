@@ -38,6 +38,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
         10,
         include_str!("../migrations/010_server_keys_compliance.sql"),
     ),
+    (
+        11,
+        include_str!("../migrations/011_extended_features.sql"),
+    ),
 ];
 
 pub fn initialize_database(path: &Path) -> Result<()> {
@@ -241,6 +245,7 @@ pub fn store_remote_scan_results(
     results: &[HostScanResult],
     username: &str,
     sudo_enabled: bool,
+    proxy_jump: Option<&str>,
 ) -> Result<RemoteScanSummary> {
     let mut connection = Connection::open(path)
         .with_context(|| format!("failed to open database at {}", path.display()))?;
@@ -270,6 +275,11 @@ pub fn store_remote_scan_results(
     )?;
     let scan_run_id = connection.last_insert_rowid();
 
+    let bastion_host_ids = proxy_jump
+        .map(|chain| resolve_proxy_jump_host_ids(&connection, chain))
+        .transpose()?
+        .unwrap_or_default();
+
     let tx = connection.transaction()?;
     let mut evidence_items = 0_usize;
     for result in results {
@@ -277,6 +287,15 @@ pub fn store_remote_scan_results(
         for evidence in &result.evidence {
             insert_raw_evidence(&tx, scan_run_id, host_id, evidence)?;
             evidence_items += 1;
+        }
+        if result.succeeded() {
+            for bastion_host_id in &bastion_host_ids {
+                tx.execute(
+                    "INSERT OR IGNORE INTO bastion_reachability (host_id, bastion_host_id, scan_run_id)
+                     VALUES (?1, ?2, ?3)",
+                    params![host_id, bastion_host_id, scan_run_id],
+                )?;
+            }
         }
     }
     tx.commit()?;
@@ -1663,6 +1682,7 @@ pub fn rebuild_graph_edges(path: &Path) -> Result<()> {
     insert_certificate_authority_edges(&connection)?;
     insert_sudo_edges(&connection)?;
     insert_client_config_edges(&connection)?;
+    insert_bastion_reachability_edges(&connection)?;
     Ok(())
 }
 
@@ -3420,6 +3440,31 @@ fn insert_client_config_edges(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn insert_bastion_reachability_edges(connection: &Connection) -> Result<()> {
+    connection.execute(
+        "INSERT OR IGNORE INTO graph_edges (
+            from_type, from_id, from_label, to_type, to_id, to_label,
+            edge_type, weight, confidence, evidence
+        )
+        SELECT
+            'HOST',
+            source.id,
+            COALESCE(source.hostname, source.ip_address),
+            'HOST',
+            bastion.id,
+            COALESCE(bastion.hostname, bastion.ip_address),
+            'BASTION_REACHABILITY',
+            2,
+            'HIGH',
+            'scan via ProxyJump'
+        FROM bastion_reachability br
+        JOIN hosts source ON source.id = br.host_id
+        JOIN hosts bastion ON bastion.id = br.bastion_host_id",
+        [],
+    )?;
+    Ok(())
+}
+
 fn map_graph_edge_record(row: &Row<'_>) -> rusqlite::Result<GraphEdgeRecord> {
     Ok(GraphEdgeRecord {
         id: row.get(0)?,
@@ -3592,4 +3637,167 @@ fn resolve_sudo_rule_node(connection: &Connection, value: &str) -> Result<Option
         )
         .optional()
         .context("failed to resolve sudo rule graph node")
+}
+
+pub fn resolve_host_id(path: &Path, target: &str) -> Result<Option<i64>> {
+    Ok(get_host_detail(path, target)?.map(|detail| detail.host.id))
+}
+
+pub fn update_host_cloud_metadata(
+    path: &Path,
+    host_id: i64,
+    environment: Option<&str>,
+    criticality: Option<&str>,
+    cloud_tags_json: &str,
+) -> Result<()> {
+    initialize_database(path)?;
+    let connection = Connection::open(path)
+        .with_context(|| format!("failed to open database at {}", path.display()))?;
+    apply_pragmas(&connection)?;
+    connection.execute(
+        "UPDATE hosts
+         SET environment = COALESCE(?1, environment),
+             criticality = COALESCE(?2, criticality),
+             cloud_tags_json = ?3
+         WHERE id = ?4",
+        params![environment, criticality, cloud_tags_json, host_id],
+    )?;
+    Ok(())
+}
+
+pub fn update_host_hardening_scores(path: &Path, scores: &[(i64, i64)]) -> Result<()> {
+    initialize_database(path)?;
+    let connection = Connection::open(path)
+        .with_context(|| format!("failed to open database at {}", path.display()))?;
+    apply_pragmas(&connection)?;
+    for (host_id, score) in scores {
+        connection.execute(
+            "UPDATE hosts SET hardening_score = ?1 WHERE id = ?2",
+            params![score, host_id],
+        )?;
+    }
+    Ok(())
+}
+
+pub fn insert_external_finding(
+    path: &Path,
+    host_id: Option<i64>,
+    source: &str,
+    finding_id: &str,
+    severity: &str,
+    title: &str,
+    description: Option<&str>,
+    evidence: Option<&str>,
+) -> Result<()> {
+    initialize_database(path)?;
+    let connection = Connection::open(path)
+        .with_context(|| format!("failed to open database at {}", path.display()))?;
+    apply_pragmas(&connection)?;
+    connection.execute(
+        "INSERT INTO external_findings (
+            host_id, source, finding_id, severity, title, description, evidence, imported_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            host_id,
+            source,
+            finding_id,
+            severity.to_ascii_uppercase(),
+            title,
+            description,
+            evidence,
+            Utc::now().to_rfc3339(),
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn record_bastion_reachability(
+    path: &Path,
+    host_id: i64,
+    bastion_host_id: i64,
+    scan_run_id: i64,
+) -> Result<()> {
+    initialize_database(path)?;
+    let connection = Connection::open(path)
+        .with_context(|| format!("failed to open database at {}", path.display()))?;
+    apply_pragmas(&connection)?;
+    connection.execute(
+        "INSERT OR IGNORE INTO bastion_reachability (host_id, bastion_host_id, scan_run_id)
+         VALUES (?1, ?2, ?3)",
+        params![host_id, bastion_host_id, scan_run_id],
+    )?;
+    Ok(())
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RawEvidenceBundleRecord {
+    pub host_id: i64,
+    pub evidence_type: String,
+    pub source: String,
+    pub content: String,
+    pub collected_at: String,
+}
+
+pub fn list_raw_evidence_for_bundle(
+    path: &Path,
+    host_filter: Option<&str>,
+) -> Result<Vec<RawEvidenceBundleRecord>> {
+    initialize_database(path)?;
+    let connection = Connection::open(path)
+        .with_context(|| format!("failed to open database at {}", path.display()))?;
+    apply_pragmas(&connection)?;
+
+    let host_id = host_filter
+        .map(|target| resolve_host_id(path, target))
+        .transpose()?
+        .flatten();
+
+    let mut sql = String::from(
+        "SELECT re.host_id, re.evidence_type, re.source, re.content, re.collected_at
+         FROM raw_evidence re",
+    );
+    if host_id.is_some() {
+        sql.push_str(" WHERE re.host_id = ?1");
+    }
+    sql.push_str(" ORDER BY re.id DESC LIMIT 10000");
+
+    let mut statement = connection.prepare(&sql)?;
+    let rows = if let Some(host_id) = host_id {
+        statement.query_map(params![host_id], map_raw_evidence_bundle_row)?
+    } else {
+        statement.query_map([], map_raw_evidence_bundle_row)?
+    };
+
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .context("failed to list raw evidence for bundle export")
+}
+
+fn resolve_proxy_jump_host_ids(connection: &Connection, chain: &str) -> Result<Vec<i64>> {
+    let mut host_ids = Vec::new();
+    for hop in chain.split(',') {
+        let hop = hop.trim();
+        if hop.is_empty() {
+            continue;
+        }
+        let host_part = hop.rsplit_once('@').map(|(_, value)| value).unwrap_or(hop);
+        let host_label = host_part
+            .trim_matches(|c| c == '[' || c == ']')
+            .split(':')
+            .next()
+            .unwrap_or(host_part);
+        if let Some(record) = find_host_record(connection, host_label)? {
+            host_ids.push(record.id);
+        }
+    }
+    Ok(host_ids)
+}
+
+fn map_raw_evidence_bundle_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawEvidenceBundleRecord> {
+    Ok(RawEvidenceBundleRecord {
+        host_id: row.get(0)?,
+        evidence_type: row.get(1)?,
+        source: row.get(2)?,
+        content: row.get(3)?,
+        collected_at: row.get(4)?,
+    })
 }

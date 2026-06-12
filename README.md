@@ -6,7 +6,7 @@
 
 SSHMap is an agentless SSH exposure management CLI. It discovers SSH services, collects read-only configuration evidence, analyzes security risks, builds a directed access graph, and exposes inventory through a command-line interface, REST API, and React dashboard.
 
-**Current release:** `1.1.0`  
+**Current release:** `1.2.0`  
 **License:** [GNU General Public License v3.0 or later](LICENSE) (GPL-3.0-or-later)
 
 ## Author
@@ -43,8 +43,8 @@ Run `sshmap` or `sshmap --help` for the full command reference. Use `sshmap <com
 SSHMap answers four practical questions for infrastructure and security teams:
 
 1. **Where is SSH exposed?** — TCP discovery finds open SSH ports and banners without authentication.
-2. **What SSH-related configuration exists?** — Authenticated scans and imports collect `sshd_config`, `authorized_keys`, sudoers, `known_hosts`, `/etc/hosts`, and client `ssh_config` evidence.
-3. **What is risky?** — A built-in risk engine flags weak daemon settings, unrestricted keys, key reuse, dangerous sudo rules, combined escalation paths, stale keys, known OpenSSH CVEs, and server host key drift.
+2. **What SSH-related configuration exists?** — Authenticated scans and imports collect `sshd_config`, `authorized_keys`, sudoers, PAM/nsswitch, `known_hosts`, `/etc/hosts`, and client `ssh_config` evidence.
+3. **What is risky?** — A built-in risk engine flags weak daemon settings, unrestricted keys, key reuse, dangerous sudo rules, Match-block overrides, certificate expiry, PAM weaknesses, combined escalation paths, stale keys, known OpenSSH CVEs, and server host key drift.
 4. **How can access spread?** — A directed graph models users, keys, hosts, sudo relationships, and SSH CA trust for path, blast-radius, and key-compromise simulation.
 
 All findings are stored in a local SQLite database. You can query them from the CLI, export reports, compare baselines over time, or serve them through a read-only API.
@@ -114,6 +114,7 @@ After connecting, SSHMap runs a fixed set of remote commands (passwd, groups, au
 | `--proxy-jump` / `-J` | Reach targets through one or more bastion hops (OpenSSH and native) |
 | `--strict-host-key` | Control host key verification (`yes`, `no`, `accept-new`) |
 | `--no-connection-reuse` | Disable OpenSSH ControlMaster per-host multiplexing |
+| `--dry-run` | Print planned read-only remote commands per target without connecting or writing evidence |
 
 **When to use:** Authorized assessments where you have SSH access and want live, complete evidence.
 
@@ -147,6 +148,8 @@ Use `--sudo` when passwordless sudo is required to read `/etc/ssh`, `/etc/sudoer
 | `authorized-keys` | `authorized_keys` file | Key-to-user bindings (requires `--user`) |
 | `sudoers` | sudoers fragment | Privilege escalation rules |
 | `json` | Prior SSHMap JSON report | Host inventory from export |
+| `ssh-audit` | ssh-audit JSON report | External SSH daemon findings |
+| `lynis` | Lynis report/dat file | External hardening warnings and suggestions |
 | `auto` | Any supported evidence or inventory file | Parser is selected from filename and content |
 | `bundle` | Directory of evidence files | Imports every auto-detected supported file |
 
@@ -211,6 +214,7 @@ For lightweight scheduled audits, use `--repeat-every-seconds` with `--repeat-co
 |---------|---------|
 | `sshmap enrich dns` | Resolve known hostnames and aliases into IP aliases |
 | `sshmap enrich dns --reverse` | Also attempt reverse DNS through `getent hosts` |
+| `sshmap enrich cloud --file tags.json` | Apply cloud/CMDB tags to hosts (environment, criticality, provider metadata) |
 
 Host aliases come from `/etc/hosts`, DNS enrichment, and parsed evidence. Low-confidence loopback or special-use aliases are retained as evidence but are not used to create inventory rows automatically.
 
@@ -232,6 +236,9 @@ Example risk categories:
 - Weak SSH key material (`ssh-dss`, legacy `ssh-rsa`, RSA below 2048 bits)
 - Risky daemon directives (`MaxAuthTries`, `PermitUserEnvironment`, `X11Forwarding`)
 - Wildcard sudoers command patterns
+- SSH certificate expiry and Match-block policy overrides
+- PAM stack weaknesses (`nullok`, password-backed sshd PAM)
+- Short sudo paths to root (`SUDO_PATH_TO_ROOT`)
 
 | Command | Purpose |
 |---------|---------|
@@ -326,6 +333,32 @@ sshmap compliance report --framework CIS --db sshmap.db
 sshmap compliance report --framework all --json --db sshmap.db
 ```
 
+### v1.2.0 Automation and Integrations
+
+| Feature | Command / API | Purpose |
+|---------|---------------|---------|
+| Webhook alerting | `sshmap watch --webhook-url URL` | Periodic analyze cycles with optional baseline drift in webhook payload |
+| SARIF export | `sshmap export sarif` | SARIF 2.1.0 for GitHub Code Scanning and CI gates |
+| Remediation export | `sshmap export remediation --format ansible\|shell` | Bulk Ansible playbook or shell script snippets from open risks |
+| Evidence audit bundle | `sshmap export bundle --output audit.zip` | ZIP manifest with hosts, risks, optional raw evidence |
+| Host hardening score | `sshmap hardening report` / `GET /api/hardening` | Per-host 0–100 score from risks and compliance |
+| PAM / nsswitch collection | Included in `scan` | Collects `/etc/pam.d/sshd`, `common-auth`, `nsswitch.conf` |
+| Match block risks | Automatic in `analyze` | Flags risky `Match` overrides (root login, password auth) |
+| Certificate expiry risks | Automatic in `analyze` | `SSH_CERTIFICATE_EXPIRED` / `SSH_CERTIFICATE_EXPIRING_SOON` |
+| Sudo path-to-root | Automatic in `analyze` | `SUDO_PATH_TO_ROOT` for NOPASSWD shell escalation binaries |
+| Bastion reachability edges | Automatic when scanning via `--proxy-jump` | `BASTION_REACHABILITY` graph edges |
+| Scoped API tokens | `serve --read-token read:... --write-token write:...` | Separate read vs write API credentials |
+| Read-only manifest CI test | `cargo test remote_command_manifest_is_read_only` | Guards remote command allowlist in unit tests |
+
+```bash
+sshmap watch --interval 3600 --webhook-url https://hooks.example.com/sshmap --baseline weekly --db sshmap.db
+sshmap export sarif --output findings.sarif.json --db sshmap.db
+sshmap export remediation --format ansible --output remediation.yml --db sshmap.db
+sshmap export bundle --output audit-bundle.zip --include-raw-evidence --db sshmap.db
+sshmap hardening report --json --db sshmap.db
+sshmap serve --read-token read:secret --write-token write:secret --allow-write-api --db sshmap.db
+```
+
 ### Multi-Database Merge (`merge`)
 
 ```bash
@@ -344,6 +377,9 @@ sshmap merge --from region-a.db --from region-b.db --output central.db
 | `export summary` | Compact JSON stats for dashboards |
 | `export risks` | JSON or NDJSON risk stream |
 | `export hosts` / `known-hosts` / `ssh-config` | Filtered CSV or JSON slices |
+| `export sarif` | SARIF 2.1.0 JSON for CI and code scanning platforms |
+| `export remediation` | Ansible playbook or shell remediation script |
+| `export bundle` | ZIP audit bundle (manifest, hosts, risks, optional raw evidence) |
 
 ### Performance Benchmarks (`bench`)
 
@@ -362,7 +398,8 @@ Use in release pipelines to catch performance regressions.
 - Opens the database in **read-only** mode
 - Serves JSON REST endpoints under `/api/*`
 - Optional embedded HTML dashboard or React build from `dashboard/dist`
-- Optional `--token` authentication (`X-SSHMap-Token` header); required on non-loopback binds
+- Optional `--token`, `--read-token`, or `--write-token` authentication (`X-SSHMap-Token` header); required on non-loopback binds
+- `--allow-write-api` enables baseline/exception writes; write routes require the write-scoped token when tokens are split
 
 See [Web Server, API, and Dashboard](#web-server-api-and-dashboard) for endpoint list.
 
@@ -454,6 +491,7 @@ sshmap scan --file examples/hosts.txt --user audituser --key ~/.ssh/audit_ed2551
 
 sshmap scan --targets 10.10.0.0/24 --user audituser --key ~/.ssh/audit_ed25519 --sudo --db sshmap.db
 sshmap scan --file examples/hosts.txt --users-file audit-users.txt --agent --db sshmap.db
+sshmap scan --dry-run --file examples/hosts.txt --user audituser --key ~/.ssh/audit_ed25519 --db sshmap.db
 ```
 
 ### Workflow Run
@@ -474,6 +512,8 @@ sshmap import auto --file evidence/sshd_config --host web01 --db sshmap.db
 sshmap import bundle --dir evidence-drop --host web01 --user deploy --db sshmap.db
 sshmap import sshd-config --file sshd_config --host web01 --db sshmap.db
 sshmap import authorized-keys --file authorized_keys --host web01 --user deploy --db sshmap.db
+sshmap import ssh-audit --file ssh-audit.json --host web01 --db sshmap.db
+sshmap import lynis --file lynis-report.dat --host web01 --db sshmap.db
 sshmap analyze --db sshmap.db
 ```
 
@@ -482,6 +522,7 @@ sshmap analyze --db sshmap.db
 ```bash
 sshmap enrich dns --db sshmap.db
 sshmap enrich dns --reverse --limit 500 --db sshmap.db
+sshmap enrich cloud --file examples/cloud-tags.json --db sshmap.db
 sshmap db stats --db sshmap.db
 ```
 
@@ -509,11 +550,21 @@ sshmap compliance report --framework CIS --db sshmap.db
 sshmap merge --from region-a.db --from region-b.db --output central.db
 ```
 
-### Reports
+### Reports and Exports
 
 ```bash
 sshmap report create --format html --output report.html --db sshmap.db
 sshmap export summary --output summary.json --db sshmap.db
+sshmap export sarif --output findings.sarif.json --db sshmap.db
+sshmap export remediation --format ansible --output remediation.yml --db sshmap.db
+sshmap export bundle --output audit-bundle.zip --include-raw-evidence --db sshmap.db
+```
+
+### Hardening and Scheduled Analysis
+
+```bash
+sshmap hardening report --json --db sshmap.db
+sshmap watch --interval 3600 --webhook-url https://hooks.example.com/sshmap --baseline weekly --db sshmap.db
 ```
 
 ---
@@ -548,6 +599,15 @@ sshmap serve --db sshmap.db --listen 127.0.0.1:8080 --read-only \
   --token "$SSHMAP_TOKEN" --allow-write-api
 ```
 
+Split read and write credentials when integrations should not mutate inventory:
+
+```bash
+sshmap serve --db sshmap.db --listen 127.0.0.1:8080 --read-only \
+  --read-token "read:$SSHMAP_READ_TOKEN" \
+  --write-token "write:$SSHMAP_WRITE_TOKEN" \
+  --allow-write-api
+```
+
 Core API endpoints:
 
 ```text
@@ -578,6 +638,7 @@ GET /api/compliance?framework=
 GET /api/operations-metrics
 GET /api/paths?from=...&to=...&limit=
 GET /api/key-blast-radius?fingerprint=
+GET /api/hardening
 POST /api/baselines
 POST /api/exceptions
 DELETE /api/exceptions/{id}

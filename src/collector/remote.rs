@@ -75,6 +75,7 @@ pub async fn run_remote_scan(request: RemoteScanRequest) -> Result<RemoteScanSum
         &results,
         &request.username,
         request.use_sudo,
+        request.proxy_jump.as_deref(),
     )
 }
 

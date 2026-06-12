@@ -1,0 +1,52 @@
+use crate::webhook::{build_alert_payload, send_webhook};
+use anyhow::Result;
+use std::path::Path;
+use std::time::Duration;
+use tokio::time::sleep;
+
+pub struct WatchConfig {
+    pub db_path: std::path::PathBuf,
+    pub interval_seconds: u64,
+    pub webhook_url: Option<String>,
+    pub baseline_name: Option<String>,
+}
+
+pub async fn run_watch<F, Fut>(config: WatchConfig, mut run_cycle: F) -> Result<()>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<()>>,
+{
+    loop {
+        run_cycle().await?;
+        if let Some(url) = &config.webhook_url {
+            notify_webhook(url, &config.db_path, config.baseline_name.as_deref()).await?;
+        }
+        sleep(Duration::from_secs(config.interval_seconds.max(60))).await;
+    }
+}
+
+pub async fn notify_webhook(
+    url: &str,
+    db_path: &Path,
+    baseline_name: Option<&str>,
+) -> Result<()> {
+    let summary = crate::server::build_api_summary(db_path)?;
+    let (new_risks, resolved_risks) = if let Some(name) = baseline_name {
+        let diff = crate::db::diff_baselines(db_path, name, "latest")?;
+        (diff.new_risks.len(), diff.resolved_risks.len())
+    } else {
+        (0, 0)
+    };
+
+    let payload = build_alert_payload(
+        "sshmap.watch.completed",
+        &db_path.display().to_string(),
+        summary.critical_risks,
+        summary.high_risks,
+        new_risks,
+        resolved_risks,
+        summary.stats.hosts,
+        None,
+    );
+    send_webhook(url, &payload).await
+}

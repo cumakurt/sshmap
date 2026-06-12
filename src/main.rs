@@ -15,8 +15,15 @@ mod enrich;
 mod error;
 mod evidence_drift;
 mod exceptions;
+mod bundle_export;
+mod cloud_enrich;
 mod export;
 mod graph;
+mod hardening;
+mod remediation_export;
+mod sarif;
+mod watch;
+mod webhook;
 mod host_context;
 mod host_key_scan;
 mod importer;
@@ -122,38 +129,42 @@ async fn main() -> Result<()> {
         }
         Command::Scan(args) => {
             cli::print_authorization_notice();
-            let summary = run_scan_phase(
-                &app_config,
-                ScanPhaseOptions {
-                    targets: args.targets,
-                    file: args.file,
-                    user: args.user,
-                    users_file: args.users_file,
-                    key: args.key,
-                    agent: args.agent,
-                    identity_agent: args.identity_agent,
-                    identities_only: args.identities_only,
-                    no_identities_only: args.no_identities_only,
-                    sudo: args.sudo,
-                    ports: args.ports,
-                    concurrency: args.concurrency,
-                    timeout: args.timeout,
-                    progress: args.progress,
-                    max_targets: args.max_targets,
-                    transport: args.transport,
-                    strict_host_key: args.strict_host_key,
-                    known_hosts: args.known_hosts,
-                    no_connection_reuse: args.no_connection_reuse,
-                    proxy_jump: args.proxy_jump,
-                    db: args.db,
-                },
-            )
-            .await?;
+            if args.dry_run {
+                run_scan_dry_run(&app_config, &args)?;
+            } else {
+                let summary = run_scan_phase(
+                    &app_config,
+                    ScanPhaseOptions {
+                        targets: args.targets,
+                        file: args.file,
+                        user: args.user,
+                        users_file: args.users_file,
+                        key: args.key,
+                        agent: args.agent,
+                        identity_agent: args.identity_agent,
+                        identities_only: args.identities_only,
+                        no_identities_only: args.no_identities_only,
+                        sudo: args.sudo,
+                        ports: args.ports,
+                        concurrency: args.concurrency,
+                        timeout: args.timeout,
+                        progress: args.progress,
+                        max_targets: args.max_targets,
+                        transport: args.transport,
+                        strict_host_key: args.strict_host_key,
+                        known_hosts: args.known_hosts,
+                        no_connection_reuse: args.no_connection_reuse,
+                        proxy_jump: args.proxy_jump,
+                        db: args.db,
+                    },
+                )
+                .await?;
 
-            println!("Targets scanned: {}", summary.targets_scanned);
-            println!("Hosts succeeded: {}", summary.hosts_succeeded);
-            println!("Hosts failed: {}", summary.hosts_failed);
-            println!("Evidence items: {}", summary.evidence_items);
+                println!("Targets scanned: {}", summary.targets_scanned);
+                println!("Hosts succeeded: {}", summary.hosts_succeeded);
+                println!("Hosts failed: {}", summary.hosts_failed);
+                println!("Evidence items: {}", summary.evidence_items);
+            }
         }
         Command::Workflow { command } => match command {
             cli::WorkflowCommand::Run(args) => {
@@ -674,6 +685,22 @@ async fn main() -> Result<()> {
                     username: None,
                     mapping: None,
                 },
+                ImportCommand::SshAudit(ImportAutoArgs { file, host, db, .. }) => ImportRequest {
+                    kind: ImportKind::SshAudit,
+                    file,
+                    db_path: db,
+                    host,
+                    username: None,
+                    mapping: None,
+                },
+                ImportCommand::Lynis(ImportAutoArgs { file, host, db, .. }) => ImportRequest {
+                    kind: ImportKind::Lynis,
+                    file,
+                    db_path: db,
+                    host,
+                    username: None,
+                    mapping: None,
+                },
             };
 
             db::initialize_database(&request.db_path)?;
@@ -686,6 +713,11 @@ async fn main() -> Result<()> {
                 let summary = enrich::enrich_dns(&db_path, args.limit, args.reverse)?;
                 println!("Enriched aliases: {}", summary.imported);
             }
+            cli::EnrichCommand::Cloud(args) => {
+                let db_path = config::resolve_database(&app_config, &args.db);
+                let summary = cloud_enrich::enrich_from_tags_file(&db_path, &args.file)?;
+                println!("Cloud-enriched hosts: {}", summary.imported);
+            }
         },
         Command::Serve(args) => {
             let serve = config::serve_config(&app_config);
@@ -697,12 +729,18 @@ async fn main() -> Result<()> {
                 .map_err(|error| anyhow::anyhow!("invalid listen address: {error}"))?;
             let dashboard_dir =
                 config::resolve_dashboard_dir(&app_config, args.dashboard.as_deref());
+            let tokens = server::resolve_api_tokens(
+                args.token.or(serve.token),
+                args.read_token,
+                args.write_token,
+            )?;
             server::run_server(server::ServerConfig {
                 db_path,
                 listen,
                 read_only: serve.read_only.unwrap_or(args.read_only),
                 allow_write_api: args.allow_write_api || serve.allow_write_api.unwrap_or(false),
-                token: args.token.or(serve.token),
+                read_token: tokens.read_token.clone(),
+                write_token: tokens.write_token.clone(),
                 dashboard_dir,
             })
             .await?;
@@ -796,6 +834,74 @@ async fn main() -> Result<()> {
             }
         }
         Command::Completion(args) => cli::run_completion(args.shell),
+        Command::Watch(args) => {
+            let db_path = config::resolve_database(&app_config, &args.db);
+            let config = watch::WatchConfig {
+                db_path: db_path.clone(),
+                interval_seconds: args.interval,
+                webhook_url: args.webhook_url.clone(),
+                baseline_name: args.baseline.clone(),
+            };
+            let config_policy_path = config::risk_policy_path(&app_config);
+            let policy_path = cli
+                .risk_policy
+                .as_deref()
+                .or(config_policy_path.as_deref());
+            let policy = risk::load_risk_policy(policy_path)?;
+            watch::run_watch(config, move || {
+                let db_path = db_path.clone();
+                let policy = policy.clone();
+                let json = args.json;
+                async move {
+                    db::initialize_database(&db_path)?;
+                    let summary = analyzer::run_analysis(
+                        &db_path,
+                        models::AnalyzeScope::All,
+                        &policy,
+                        false,
+                    )?;
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&summary)?);
+                    } else {
+                        println!(
+                            "Watch cycle: {} risks across {} evidence items",
+                            summary.risks, summary.raw_evidence_items
+                        );
+                    }
+                    Ok(())
+                }
+            })
+            .await?;
+        }
+        Command::Hardening { command } => match command {
+            cli::HardeningCommand::Report(args) => {
+                let db_path = config::resolve_database(&app_config, &args.db);
+                db::initialize_database(&db_path)?;
+                let hosts = db::list_hosts(&db_path, 10_000)?;
+                let risks = db::list_risks(
+                    &db_path,
+                    &models::RiskQuery {
+                        severity: None,
+                        code: None,
+                        limit: 10_000,
+                    },
+                )?;
+                let scores = hardening::compute_inventory_hardening(&hosts, &risks);
+                if args.json {
+                    println!("{}", serde_json::to_string_pretty(&scores)?);
+                } else {
+                    for score in scores {
+                        println!(
+                            "{} ({}) score={} risks={}",
+                            score.hostname.as_deref().unwrap_or("-"),
+                            score.ip_address,
+                            score.score,
+                            score.risk_count
+                        );
+                    }
+                }
+            }
+        },
         Command::Export { command } => match command {
             cli::ExportCommand::Summary(args) => {
                 let db_path = config::resolve_database(&app_config, &args.db);
@@ -836,6 +942,45 @@ async fn main() -> Result<()> {
                 let content = export::export_ssh_config(&db_path, format, args.limit)?;
                 export::write_output(&content, args.output.as_deref())?;
             }
+            cli::ExportCommand::Sarif(args) => {
+                let db_path = config::resolve_database(&app_config, &args.db);
+                db::initialize_database(&db_path)?;
+                let risks = db::list_risks(
+                    &db_path,
+                    &models::RiskQuery {
+                        severity: None,
+                        code: None,
+                        limit: args.limit,
+                    },
+                )?;
+                let content = sarif::export_risks_sarif(&risks, env!("CARGO_PKG_VERSION"));
+                export::write_output(&content, args.output.as_deref())?;
+            }
+            cli::ExportCommand::Remediation(args) => {
+                let db_path = config::resolve_database(&app_config, &args.db);
+                db::initialize_database(&db_path)?;
+                let risks = db::list_risks(
+                    &db_path,
+                    &models::RiskQuery {
+                        severity: None,
+                        code: None,
+                        limit: args.limit,
+                    },
+                )?;
+                let format = remediation_export::RemediationExportFormat::parse(&args.format)?;
+                let content = remediation_export::export_remediation(&risks, format);
+                export::write_output(&content, args.output.as_deref())?;
+            }
+            cli::ExportCommand::Bundle(args) => {
+                let db_path = config::resolve_database(&app_config, &args.db);
+                let output = bundle_export::export_evidence_bundle(bundle_export::EvidenceBundleOptions {
+                    db_path: &db_path,
+                    output: &args.output,
+                    host: args.host.as_deref(),
+                    include_raw_evidence: args.include_raw_evidence,
+                })?;
+                println!("Wrote {}", output.display());
+            }
         },
     }
 
@@ -848,6 +993,40 @@ fn init_tracing(verbose: bool) {
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_filter));
 
     fmt().with_env_filter(filter).without_time().init();
+}
+
+fn run_scan_dry_run(app_config: &config::SshMapConfig, args: &cli::ScanArgs) -> Result<()> {
+    let scan = config::scan_config(app_config);
+    let runtime = config::runtime_config(app_config);
+    let ports = scan
+        .ports
+        .as_ref()
+        .map(|ports| config::format_ports(ports))
+        .unwrap_or(args.ports.clone());
+    let max_targets = config::resolve_max_targets(app_config, args.max_targets);
+    let targets = scope::enforce_max_targets(
+        scope::load_target_endpoints(args.targets.as_deref(), args.file.as_deref(), &ports)?,
+        max_targets,
+    )?;
+    let use_sudo = args.sudo || scan.sudo.unwrap_or(false);
+    let commands = collector::commands::default_remote_commands();
+    println!("Dry-run scan plan ({} targets)", targets.len());
+    for target in targets {
+        println!("Target {}:{}", target.host, target.port);
+        for command in &commands {
+            if let Some(rendered) = command.render(use_sudo) {
+                println!("  [{}] {}", command.evidence_type, rendered);
+            } else {
+                println!("  [{}] skipped (requires --sudo)", command.evidence_type);
+            }
+        }
+    }
+    let concurrency = scan
+        .concurrency
+        .or(runtime.concurrency)
+        .unwrap_or(args.concurrency);
+    println!("Concurrency: {concurrency}");
+    Ok(())
 }
 
 struct ScanPhaseOptions {

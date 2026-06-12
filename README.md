@@ -447,7 +447,20 @@ See [SECURITY.md](SECURITY.md) for API authentication, native transport dependen
 
 ## Installation
 
-The repository includes an `install.sh` installer. It detects the operating system and supported package manager, installs missing system dependencies, installs Rust through rustup when `cargo` is missing, builds the release binary, and copies it to `~/.local/bin` by default.
+The repository includes an `install.sh` installer with a guided, step-by-step setup:
+
+1. Detect operating system and package manager
+2. Check required dependencies (OpenSSH, curl, compiler, SQLite, Rust)
+3. Install only missing OS packages for your distribution
+4. Install Rust via rustup when `cargo` is not present
+5. Build the release binary and install it to `~/.local/bin`
+6. Update your shell `PATH` so `sshmap` is available immediately
+
+```bash
+./install.sh          # interactive install
+./install.sh -y       # non-interactive (package managers)
+./install.sh --dry-run
+```
 
 Supported package managers:
 
@@ -455,10 +468,11 @@ Supported package managers:
 apt, dnf, yum, pacman, zypper, apk, brew
 ```
 
-After installation:
+After installation, open a new terminal or `source ~/.bashrc` / `source ~/.zshrc`, then:
 
 ```bash
 sshmap doctor
+sshmap init --db sshmap.db
 sshmap doctor --db sshmap.db --config examples/sshmap.yaml --scope examples/hosts.txt
 ```
 

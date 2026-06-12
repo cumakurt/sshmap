@@ -66,4 +66,4 @@ Sign checksums locally:
 
 ## Install Script
 
-For development workstations, use `./install.sh` to install system dependencies, build from source, and copy the binary to `~/.local/bin` by default.
+For development workstations, use `./install.sh` to detect the OS, verify dependencies, install only missing packages, build from source, copy the binary to `~/.local/bin`, and configure your shell `PATH`. Run `./install.sh --dry-run` to preview actions without making changes.

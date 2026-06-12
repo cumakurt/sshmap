@@ -466,7 +466,10 @@ pub fn format_path_text(path: &GraphPathRecord) -> String {
     format_path_text_with_options(path, true)
 }
 
-fn format_path_text_with_options(path: &GraphPathRecord, include_truncation_warning: bool) -> String {
+fn format_path_text_with_options(
+    path: &GraphPathRecord,
+    include_truncation_warning: bool,
+) -> String {
     let mut output = String::new();
     if !path.found {
         writeln!(

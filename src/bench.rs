@@ -7,7 +7,6 @@ use crate::risk::RiskPolicy;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::fs;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -242,15 +241,21 @@ pub fn format_benchmark_report(report: &BenchmarkReport) -> String {
 }
 
 pub fn load_benchmark_thresholds(path: &Path) -> Result<BenchmarkThresholds> {
-    let content = fs::read_to_string(path)
-        .with_context(|| format!("failed to read benchmark thresholds {}", path.display()))?;
+    let content = crate::security::read_text_file_limited(
+        path,
+        crate::security::MAX_BENCHMARK_FILE_BYTES,
+        "benchmark thresholds",
+    )?;
     serde_json::from_str(&content)
         .with_context(|| format!("failed to parse benchmark thresholds {}", path.display()))
 }
 
 pub fn load_benchmark_report(path: &Path) -> Result<BenchmarkReport> {
-    let content = fs::read_to_string(path)
-        .with_context(|| format!("failed to read benchmark report {}", path.display()))?;
+    let content = crate::security::read_text_file_limited(
+        path,
+        crate::security::MAX_BENCHMARK_FILE_BYTES,
+        "benchmark report",
+    )?;
     serde_json::from_str(&content)
         .with_context(|| format!("failed to parse benchmark report {}", path.display()))
 }

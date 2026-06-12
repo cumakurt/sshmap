@@ -1825,9 +1825,8 @@ fn resolve_scan_usernames(
         usernames.push(username);
     }
     if let Some(path) = users_file {
-        let content = std::fs::read_to_string(path).map_err(|error| {
-            anyhow::anyhow!("failed to read users file {}: {error}", path.display())
-        })?;
+        let content =
+            security::read_text_file_limited(path, security::MAX_CONFIG_FILE_BYTES, "users file")?;
         for line in content.lines() {
             let username = line.split('#').next().unwrap_or("").trim();
             if !username.is_empty() && !usernames.iter().any(|existing| existing == username) {

@@ -1,8 +1,7 @@
 use crate::importer::store_hosts;
 use crate::models::ImportedHost;
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use std::collections::BTreeMap;
-use std::fs;
 use std::path::Path;
 
 pub fn import_csv_inventory(
@@ -10,8 +9,11 @@ pub fn import_csv_inventory(
     mapping_path: Option<&Path>,
     db_path: &Path,
 ) -> Result<crate::models::ImportSummary> {
-    let content = fs::read_to_string(path)
-        .with_context(|| format!("failed to read csv inventory {}", path.display()))?;
+    let content = crate::security::read_text_file_limited(
+        path,
+        crate::security::MAX_IMPORT_FILE_BYTES,
+        "csv inventory",
+    )?;
     let mapping = load_mapping(mapping_path)?;
     let mut lines = content.lines().filter(|line| !line.trim().is_empty());
     let header = lines
@@ -104,8 +106,11 @@ fn load_mapping(path: Option<&Path>) -> Result<BTreeMap<String, String>> {
     let Some(path) = path else {
         return Ok(BTreeMap::new());
     };
-    let content = fs::read_to_string(path)
-        .with_context(|| format!("failed to read csv mapping {}", path.display()))?;
+    let content = crate::security::read_text_file_limited(
+        path,
+        crate::security::MAX_CONFIG_FILE_BYTES,
+        "csv mapping",
+    )?;
     let mut mapping = BTreeMap::new();
     for line in content.lines() {
         let line = line.trim();

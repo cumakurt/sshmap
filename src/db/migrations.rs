@@ -20,14 +20,17 @@ const MIGRATIONS: &[(i64, &str)] = &[
         10,
         include_str!("../../migrations/010_server_keys_compliance.sql"),
     ),
-    (11, include_str!("../../migrations/011_extended_features.sql")),
+    (
+        11,
+        include_str!("../../migrations/011_extended_features.sql"),
+    ),
 ];
 
 pub fn initialize_database(path: &Path) -> Result<()> {
-    let connection = Connection::open(path)
+    let mut connection = Connection::open(path)
         .with_context(|| format!("failed to open database at {}", path.display()))?;
     apply_pragmas(&connection)?;
-    apply_migrations(&connection)?;
+    apply_migrations(&mut connection)?;
     Ok(())
 }
 
@@ -71,7 +74,7 @@ pub(crate) fn like_contains_pattern(value: &str) -> String {
     format!("%{}%", escape_like_pattern(value))
 }
 
-pub(crate) fn apply_migrations(connection: &Connection) -> Result<()> {
+pub(crate) fn apply_migrations(connection: &mut Connection) -> Result<()> {
     connection.execute_batch(
         "CREATE TABLE IF NOT EXISTS schema_migrations (
             version INTEGER PRIMARY KEY,
@@ -80,7 +83,8 @@ pub(crate) fn apply_migrations(connection: &Connection) -> Result<()> {
     )?;
 
     for (version, sql) in MIGRATIONS {
-        let applied_version = connection
+        let tx = connection.transaction()?;
+        let applied_version = tx
             .query_row(
                 "SELECT version FROM schema_migrations WHERE version = ?1",
                 params![version],
@@ -89,12 +93,13 @@ pub(crate) fn apply_migrations(connection: &Connection) -> Result<()> {
             .optional()?;
 
         if applied_version.is_none() {
-            connection.execute_batch(sql)?;
-            connection.execute(
+            tx.execute_batch(sql)?;
+            tx.execute(
                 "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
                 params![version, Utc::now().to_rfc3339()],
             )?;
         }
+        tx.commit()?;
     }
 
     Ok(())

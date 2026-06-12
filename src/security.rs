@@ -10,6 +10,48 @@ const MAX_COMPLIANCE_FRAMEWORK_BYTES: usize = 32;
 const MAX_BASELINE_NAME_BYTES: usize = 128;
 const MAX_GRAPH_NODE_REFERENCE_BYTES: usize = 512;
 const GRAPH_NODE_TYPES: &[&str] = &["host", "user", "key", "public_key", "sudo_rule"];
+pub(crate) const MAX_CONFIG_FILE_BYTES: u64 = 1_048_576;
+pub(crate) const MAX_TARGET_FILE_BYTES: u64 = 16 * 1_048_576;
+pub(crate) const MAX_IMPORT_FILE_BYTES: u64 = 64 * 1_048_576;
+pub(crate) const MAX_BUNDLE_TOTAL_BYTES: u64 = 512 * 1_048_576;
+pub(crate) const MAX_BENCHMARK_FILE_BYTES: u64 = 16 * 1_048_576;
+
+pub(crate) fn read_text_file_limited(
+    path: &Path,
+    max_bytes: u64,
+    description: &str,
+) -> Result<String> {
+    validate_regular_file_size(path, max_bytes, description)?;
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read {description} {}", path.display()))?;
+    if content.len() as u64 > max_bytes {
+        bail!(
+            "{description} {} exceeds maximum size of {max_bytes} bytes",
+            path.display()
+        );
+    }
+    Ok(content)
+}
+
+pub(crate) fn validate_regular_file_size(
+    path: &Path,
+    max_bytes: u64,
+    description: &str,
+) -> Result<u64> {
+    let metadata = std::fs::metadata(path)
+        .with_context(|| format!("failed to inspect {description} {}", path.display()))?;
+    if !metadata.is_file() {
+        bail!("{description} is not a regular file: {}", path.display());
+    }
+    let size = metadata.len();
+    if size > max_bytes {
+        bail!(
+            "{description} {} exceeds maximum size of {max_bytes} bytes",
+            path.display()
+        );
+    }
+    Ok(size)
+}
 
 pub fn validate_webhook_url(url: &str) -> Result<()> {
     let parsed = parse_webhook_url(url)?;
@@ -459,6 +501,20 @@ mod tests {
             webhook_database_label(Path::new("/var/lib/sshmap/prod.db")),
             "prod.db"
         );
+    }
+
+    #[test]
+    fn limited_text_reader_rejects_oversized_regular_files() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let path = temp_dir.path().join("oversized.txt");
+        let file = std::fs::File::create(&path).expect("file");
+        file.set_len(MAX_CONFIG_FILE_BYTES + 1)
+            .expect("set sparse file length");
+
+        let error = read_text_file_limited(&path, MAX_CONFIG_FILE_BYTES, "config file")
+            .expect_err("oversized file");
+
+        assert!(error.to_string().contains("exceeds maximum size"));
     }
 
     #[test]

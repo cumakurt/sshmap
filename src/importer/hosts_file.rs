@@ -1,12 +1,14 @@
 use crate::models::{ImportSummary, ImportedHost};
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::collections::BTreeMap;
-use std::fs;
 use std::path::Path;
 
 pub fn import_hosts_file(path: &Path, db_path: &Path) -> Result<ImportSummary> {
-    let content = fs::read_to_string(path)
-        .with_context(|| format!("failed to read hosts file {}", path.display()))?;
+    let content = crate::security::read_text_file_limited(
+        path,
+        crate::security::MAX_IMPORT_FILE_BYTES,
+        "hosts file",
+    )?;
     let aliases =
         crate::parser::hosts_file::parse_hosts_file(&content, 0, &path.display().to_string());
     let mut by_ip = BTreeMap::<String, ImportedHost>::new();

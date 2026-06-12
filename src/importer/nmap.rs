@@ -1,12 +1,14 @@
 use crate::importer::store_hosts;
 use crate::models::ImportedHost;
-use anyhow::{Context, Result};
-use std::fs;
+use anyhow::Result;
 use std::path::Path;
 
 pub fn import_nmap_xml(path: &Path, db_path: &Path) -> Result<crate::models::ImportSummary> {
-    let content = fs::read_to_string(path)
-        .with_context(|| format!("failed to read nmap xml {}", path.display()))?;
+    let content = crate::security::read_text_file_limited(
+        path,
+        crate::security::MAX_IMPORT_FILE_BYTES,
+        "nmap xml",
+    )?;
     let mut hosts = Vec::new();
 
     for host_block in content.split("<host ") {

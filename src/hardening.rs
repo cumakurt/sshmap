@@ -86,7 +86,7 @@ pub fn hardening_summary(scores: &[HostHardeningScore]) -> BTreeMap<String, usiz
         } else {
             "poor"
         };
-        *buckets.get_mut(bucket).expect("bucket") += 1;
+        *buckets.entry(bucket.to_string()).or_insert(0) += 1;
     }
     buckets
 }

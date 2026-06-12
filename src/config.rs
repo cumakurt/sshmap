@@ -66,8 +66,11 @@ pub fn load_optional(path: Option<&Path>) -> Result<SshMapConfig> {
         return Ok(SshMapConfig::default());
     };
 
-    let content = std::fs::read_to_string(path)
-        .with_context(|| format!("failed to read config file {}", path.display()))?;
+    let content = crate::security::read_text_file_limited(
+        path,
+        crate::security::MAX_CONFIG_FILE_BYTES,
+        "config file",
+    )?;
     serde_yaml::from_str(&content)
         .with_context(|| format!("failed to parse config file {}", path.display()))
 }

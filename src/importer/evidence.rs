@@ -3,11 +3,16 @@ use crate::db;
 use crate::importer::store_hosts;
 use crate::models::{ImportedHost, RawEvidenceRecord};
 use anyhow::{Context, Result, bail};
-use std::fs;
 use std::path::{Path, PathBuf};
 
 const MAX_BUNDLE_DEPTH: usize = 32;
 const MAX_BUNDLE_FILES: usize = 10_000;
+
+#[derive(Default)]
+struct BundleFileList {
+    files: Vec<PathBuf>,
+    total_bytes: u64,
+}
 
 pub fn import_file_evidence(
     source: &str,
@@ -18,8 +23,11 @@ pub fn import_file_evidence(
     db_path: &Path,
 ) -> Result<crate::models::ImportSummary> {
     crate::security::validate_import_host_identifier(host)?;
-    let content = fs::read_to_string(path)
-        .with_context(|| format!("failed to read import file {}", path.display()))?;
+    let content = crate::security::read_text_file_limited(
+        path,
+        crate::security::MAX_IMPORT_FILE_BYTES,
+        "import file",
+    )?;
     let (content, redacted) = redact_sensitive_content(&content);
     if evidence_type == "authorized_keys" && username.is_none() {
         bail!("--user is required when importing authorized_keys files");
@@ -53,8 +61,11 @@ pub fn import_file_evidence(
 }
 
 pub fn import_json_report(path: &Path, db_path: &Path) -> Result<crate::models::ImportSummary> {
-    let content = fs::read_to_string(path)
-        .with_context(|| format!("failed to read json report {}", path.display()))?;
+    let content = crate::security::read_text_file_limited(
+        path,
+        crate::security::MAX_IMPORT_FILE_BYTES,
+        "json report",
+    )?;
     let value: serde_json::Value = serde_json::from_str(&content)
         .with_context(|| format!("failed to parse json report {}", path.display()))?;
     let Some(hosts) = value.get("hosts").and_then(|hosts| hosts.as_array()) else {
@@ -118,8 +129,11 @@ pub fn import_auto(
     username: Option<&str>,
     db_path: &Path,
 ) -> Result<crate::models::ImportSummary> {
-    let content = fs::read_to_string(path)
-        .with_context(|| format!("failed to read import file {}", path.display()))?;
+    let content = crate::security::read_text_file_limited(
+        path,
+        crate::security::MAX_IMPORT_FILE_BYTES,
+        "import file",
+    )?;
     let Some(kind) = crate::parser::registry::detect_parser(path, &content) else {
         bail!("could not auto-detect parser for {}", path.display());
     };
@@ -138,7 +152,7 @@ pub fn import_bundle(
     }
 
     let mut imported = 0_usize;
-    for path in list_files_recursive(dir, 0)? {
+    for path in list_files_recursive(dir)? {
         match import_auto(&path, host, username, db_path) {
             Ok(summary) => imported += summary.imported,
             Err(error) if error.to_string().contains("could not auto-detect parser") => {}
@@ -197,7 +211,13 @@ fn infer_username_from_path(path: &Path) -> Option<String> {
     crate::parser::authorized_keys::username_from_authorized_keys_path(&path.to_string_lossy())
 }
 
-fn list_files_recursive(dir: &Path, depth: usize) -> Result<Vec<PathBuf>> {
+fn list_files_recursive(dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut state = BundleFileList::default();
+    list_files_recursive_inner(dir, 0, &mut state)?;
+    Ok(state.files)
+}
+
+fn list_files_recursive_inner(dir: &Path, depth: usize, state: &mut BundleFileList) -> Result<()> {
     if depth > MAX_BUNDLE_DEPTH {
         bail!(
             "bundle directory exceeds maximum depth of {MAX_BUNDLE_DEPTH}: {}",
@@ -205,8 +225,9 @@ fn list_files_recursive(dir: &Path, depth: usize) -> Result<Vec<PathBuf>> {
         );
     }
 
-    let mut files = Vec::new();
-    for entry in fs::read_dir(dir).with_context(|| format!("failed to read {}", dir.display()))? {
+    for entry in
+        std::fs::read_dir(dir).with_context(|| format!("failed to read {}", dir.display()))?
+    {
         let entry = entry?;
         let path = entry.path();
         let file_type = entry
@@ -216,15 +237,30 @@ fn list_files_recursive(dir: &Path, depth: usize) -> Result<Vec<PathBuf>> {
             continue;
         }
         if file_type.is_dir() {
-            files.extend(list_files_recursive(&path, depth + 1)?);
+            list_files_recursive_inner(&path, depth + 1, state)?;
         } else if file_type.is_file() {
-            files.push(path);
+            let size = crate::security::validate_regular_file_size(
+                &path,
+                crate::security::MAX_IMPORT_FILE_BYTES,
+                "bundle file",
+            )?;
+            state.total_bytes = state
+                .total_bytes
+                .checked_add(size)
+                .ok_or_else(|| anyhow::anyhow!("bundle directory total size overflow"))?;
+            if state.total_bytes > crate::security::MAX_BUNDLE_TOTAL_BYTES {
+                bail!(
+                    "bundle directory exceeds maximum total size of {} bytes",
+                    crate::security::MAX_BUNDLE_TOTAL_BYTES
+                );
+            }
+            state.files.push(path);
         }
-        if files.len() > MAX_BUNDLE_FILES {
+        if state.files.len() > MAX_BUNDLE_FILES {
             bail!("bundle directory exceeds maximum file count of {MAX_BUNDLE_FILES}");
         }
     }
-    Ok(files)
+    Ok(())
 }
 
 fn authorized_keys_source_path(username: &str) -> String {
@@ -296,5 +332,24 @@ mod import_tests {
         let summary = import_bundle(&bundle_dir, None, None, &db_path).expect("bundle import");
 
         assert_eq!(summary.imported, 0);
+    }
+
+    #[test]
+    fn bundle_import_rejects_oversized_total_input() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let bundle_dir = temp_dir.path().join("bundle");
+        std::fs::create_dir(&bundle_dir).expect("bundle dir");
+        for index in 0..9 {
+            let path = bundle_dir.join(format!("large-{index}.txt"));
+            let file = std::fs::File::create(path).expect("large file");
+            file.set_len(crate::security::MAX_IMPORT_FILE_BYTES)
+                .expect("set sparse file length");
+        }
+        let db_path = temp_dir.path().join("bundle.db");
+        crate::db::initialize_database(&db_path).expect("db");
+
+        let error = import_bundle(&bundle_dir, None, None, &db_path).expect_err("oversized bundle");
+
+        assert!(error.to_string().contains("maximum total size"));
     }
 }

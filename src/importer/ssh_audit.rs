@@ -1,6 +1,6 @@
 use crate::db;
 use crate::models::ImportSummary;
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::Deserialize;
 use std::path::Path;
 
@@ -29,8 +29,11 @@ pub fn import_ssh_audit_report(
     if let Some(host) = host {
         crate::security::validate_import_host_identifier(host)?;
     }
-    let content = std::fs::read_to_string(path)
-        .with_context(|| format!("failed to read ssh-audit report {}", path.display()))?;
+    let content = crate::security::read_text_file_limited(
+        path,
+        crate::security::MAX_IMPORT_FILE_BYTES,
+        "ssh-audit report",
+    )?;
     let report: SshAuditReport = serde_json::from_str(&content)?;
     let host_id = host
         .map(|value| db::resolve_host_id(db_path, value))

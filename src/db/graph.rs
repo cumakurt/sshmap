@@ -154,9 +154,7 @@ pub struct GraphEdgeSlice {
     pub edge_limit: usize,
 }
 
-pub fn count_graph_edges_read_only(
-    source: &(impl ReadOnlyDbAccess + ?Sized),
-) -> Result<usize> {
+pub fn count_graph_edges_read_only(source: &(impl ReadOnlyDbAccess + ?Sized)) -> Result<usize> {
     source.with_read_connection(|connection| count_rows(connection, "graph_edges"))
 }
 
@@ -718,7 +716,6 @@ fn resolve_sudo_rule_node(connection: &Connection, value: &str) -> Result<Option
         .optional()
         .context("failed to resolve sudo rule graph node")
 }
-
 
 #[cfg(test)]
 mod tests {

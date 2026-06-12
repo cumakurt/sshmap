@@ -1,9 +1,8 @@
 use crate::error::SshMapError;
 use crate::target::normalize_scope_target;
-use anyhow::{Context, Result};
+use anyhow::Result;
 use ipnet::IpNet;
 use std::collections::BTreeSet;
-use std::fs;
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::Path;
 
@@ -28,8 +27,11 @@ pub fn load_target_endpoints(
     }
 
     if let Some(path) = file_path {
-        let content = fs::read_to_string(path)
-            .with_context(|| format!("failed to read target file {}", path.display()))?;
+        let content = crate::security::read_text_file_limited(
+            path,
+            crate::security::MAX_TARGET_FILE_BYTES,
+            "target file",
+        )?;
         target_values.extend(parse_target_file_content(&content));
     }
 

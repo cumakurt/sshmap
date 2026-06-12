@@ -1,5 +1,5 @@
 use crate::models::{HostRecord, ImportSummary};
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -22,8 +22,11 @@ pub struct CloudHostTags {
 }
 
 pub fn enrich_from_tags_file(db_path: &Path, tags_file: &Path) -> Result<ImportSummary> {
-    let content = std::fs::read_to_string(tags_file)
-        .with_context(|| format!("failed to read cloud tags file {}", tags_file.display()))?;
+    let content = crate::security::read_text_file_limited(
+        tags_file,
+        crate::security::MAX_TARGET_FILE_BYTES,
+        "cloud tags file",
+    )?;
     let payload: CloudTagFile = if tags_file
         .extension()
         .is_some_and(|ext| ext == "yaml" || ext == "yml")

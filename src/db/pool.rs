@@ -54,8 +54,8 @@ impl ReadOnlyPool {
             bail!("database not found: {}", path.display());
         }
 
-        let manager = SqliteConnectionManager::file(path)
-            .with_flags(OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX);
+        let manager =
+            SqliteConnectionManager::file(path).with_flags(OpenFlags::SQLITE_OPEN_READ_ONLY);
         let pool = r2d2::Pool::builder()
             .max_size(8)
             .connection_timeout(std::time::Duration::from_secs(5))
@@ -76,11 +76,8 @@ where
         bail!("database not found: {}", path.display());
     }
 
-    let connection = Connection::open_with_flags(
-        path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .with_context(|| format!("failed to open database read-only at {}", path.display()))?;
+    let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .with_context(|| format!("failed to open database read-only at {}", path.display()))?;
     apply_read_only_pragmas(&connection)?;
     callback(&connection)
 }
@@ -97,7 +94,8 @@ mod tests {
         initialize_database(&db_path).expect("initialize");
         let pool = ReadOnlyPool::open(&db_path).expect("pool");
 
-        let from_path = crate::db::load_database_stats_read_only(db_path.as_path()).expect("path stats");
+        let from_path =
+            crate::db::load_database_stats_read_only(db_path.as_path()).expect("path stats");
         let from_pool = crate::db::load_database_stats_read_only(&pool).expect("pool stats");
         assert_eq!(from_path.hosts, from_pool.hosts);
         assert_eq!(from_path.risks, from_pool.risks);

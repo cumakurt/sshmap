@@ -1,22 +1,21 @@
+use crate::baseline;
 use crate::db::migrations::{
     apply_migrations, apply_pragmas, count_rows, initialize_database, like_contains_pattern,
 };
 use crate::db::pool::ReadOnlyDbAccess;
-use crate::baseline;
 use crate::discovery::DiscoveryResult;
 use crate::host_key_scan::ScannedServerHostKey;
 use crate::models::{
     AuditEventRecord, BaselineDiffRecord, BaselineRecord, BaselineRiskRecord, BaselineSummary,
     BaselineTrendPoint, DataQualityFindingRecord, DatabaseStats, DetailedDatabaseStats,
-    GeneratedRisk, HostAliasRecord, HostContextRecord,
-    HostDetailRecord, HostQuery, HostRecord, HostScanResult, HostServerKeyRecord, ImportSummary,
-    ImportedHost, KeyDetailRecord, KeyLocationRecord, KeySummaryRecord, KnownHostEntryRecord,
-    NewRiskException, NormalizedAnalysis, OperationsMetricsRecord, ParsedAuthorizedKey,
-    ParsedGroup, ParsedHostAlias, ParsedHostMetadata, ParsedPublicKey, ParsedUser,
-    PublicKeyAgeRecord, RawEvidenceForAnalysis, RawEvidenceRecord, RemoteScanSummary,
-    RiskExceptionRecord, RiskQuery, RiskRecord, ScanRunDetailRecord, ScanRunRecord, ScanRunSummary,
-    SshClientConfigEntryRecord, SudoRuleRecord, UserAccountRecord, UserDetailRecord, UserQuery,
-    UserSummaryRecord,
+    GeneratedRisk, HostAliasRecord, HostContextRecord, HostDetailRecord, HostQuery, HostRecord,
+    HostScanResult, HostServerKeyRecord, ImportSummary, ImportedHost, KeyDetailRecord,
+    KeyLocationRecord, KeySummaryRecord, KnownHostEntryRecord, NewRiskException,
+    NormalizedAnalysis, OperationsMetricsRecord, ParsedAuthorizedKey, ParsedGroup, ParsedHostAlias,
+    ParsedHostMetadata, ParsedPublicKey, ParsedUser, PublicKeyAgeRecord, RawEvidenceForAnalysis,
+    RawEvidenceRecord, RemoteScanSummary, RiskExceptionRecord, RiskQuery, RiskRecord,
+    ScanRunDetailRecord, ScanRunRecord, ScanRunSummary, SshClientConfigEntryRecord, SudoRuleRecord,
+    UserAccountRecord, UserDetailRecord, UserQuery, UserSummaryRecord,
 };
 use crate::target::{hostname_hint, is_ip_address, parse_host_target};
 use anyhow::{Context, Result};
@@ -142,12 +141,11 @@ fn set_app_metadata_connection(connection: &Connection, key: &str, value: &str) 
     Ok(())
 }
 
-
 pub fn store_discovery_results(path: &Path, results: &[DiscoveryResult]) -> Result<ScanRunSummary> {
     let mut connection = Connection::open(path)
         .with_context(|| format!("failed to open database at {}", path.display()))?;
     apply_pragmas(&connection)?;
-    apply_migrations(&connection)?;
+    apply_migrations(&mut connection)?;
 
     let started_at = Utc::now();
     let run_uuid = Uuid::new_v4().to_string();
@@ -209,7 +207,7 @@ pub fn store_remote_scan_results(
     let mut connection = Connection::open(path)
         .with_context(|| format!("failed to open database at {}", path.display()))?;
     apply_pragmas(&connection)?;
-    apply_migrations(&connection)?;
+    apply_migrations(&mut connection)?;
 
     let started_at = Utc::now();
     let run_uuid = Uuid::new_v4().to_string();
@@ -291,7 +289,7 @@ pub fn store_local_scan_results(
     let mut connection = Connection::open(path)
         .with_context(|| format!("failed to open database at {}", path.display()))?;
     apply_pragmas(&connection)?;
-    apply_migrations(&connection)?;
+    apply_migrations(&mut connection)?;
 
     let started_at = Utc::now();
     let run_uuid = Uuid::new_v4().to_string();
@@ -480,7 +478,6 @@ fn list_audit_events_for_scan_run(
         .context("failed to list audit events")
 }
 
-
 pub fn store_imported_hosts(
     path: &Path,
     source: &str,
@@ -493,7 +490,7 @@ pub fn store_imported_hosts(
     let mut connection = Connection::open(path)
         .with_context(|| format!("failed to open database at {}", path.display()))?;
     apply_pragmas(&connection)?;
-    apply_migrations(&connection)?;
+    apply_migrations(&mut connection)?;
 
     let started_at = Utc::now();
     let run_uuid = Uuid::new_v4().to_string();
@@ -560,7 +557,7 @@ pub fn store_host_aliases(path: &Path, aliases: &[ParsedHostAlias]) -> Result<Im
     let mut connection = Connection::open(path)
         .with_context(|| format!("failed to open database at {}", path.display()))?;
     apply_pragmas(&connection)?;
-    apply_migrations(&connection)?;
+    apply_migrations(&mut connection)?;
 
     let tx = connection.transaction()?;
     let mut imported = 0_usize;
@@ -583,7 +580,7 @@ pub fn store_imported_evidence(
     let mut connection = Connection::open(path)
         .with_context(|| format!("failed to open database at {}", path.display()))?;
     apply_pragmas(&connection)?;
-    apply_migrations(&connection)?;
+    apply_migrations(&mut connection)?;
 
     let started_at = Utc::now();
     let run_uuid = Uuid::new_v4().to_string();
@@ -1588,9 +1585,6 @@ pub fn list_active_risk_codes_read_only(
     source.with_read_connection(list_active_risk_codes_connection)
 }
 
-
-
-
 pub fn count_open_risks_by_severity_read_only(
     source: &(impl ReadOnlyDbAccess + ?Sized),
 ) -> Result<(usize, usize)> {
@@ -1854,9 +1848,6 @@ pub fn list_risk_exceptions_read_only(
 ) -> Result<Vec<RiskExceptionRecord>> {
     source.with_read_connection(list_risk_exceptions_connection)
 }
-
-
-
 
 fn count_risks_by_severity(connection: &Connection, severity: &str) -> Result<usize> {
     let count = connection.query_row(
@@ -2913,7 +2904,6 @@ fn map_key_summary_record(row: &Row<'_>) -> rusqlite::Result<KeySummaryRecord> {
 fn i64_to_usize(value: i64) -> usize {
     usize::try_from(value).unwrap_or_default()
 }
-
 
 pub fn resolve_host_id(path: &Path, target: &str) -> Result<Option<i64>> {
     Ok(get_host_detail(path, target)?.map(|detail| detail.host.id))

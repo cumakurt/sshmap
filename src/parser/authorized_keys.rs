@@ -3,7 +3,6 @@ use anyhow::Result;
 use base64::Engine;
 use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
 
 const KEY_TYPES: &[&str] = &[
     "ssh-ed25519",
@@ -99,8 +98,8 @@ fn parse_authorized_key_line(
             let metadata = parse_certificate_metadata(&key_bytes);
             (
                 metadata.signing_ca_fingerprint,
-                Some(metadata.valid_after as i64),
-                Some(metadata.valid_before as i64),
+                metadata.valid_after,
+                metadata.valid_before,
             )
         } else {
             (None, None, None)
@@ -133,38 +132,49 @@ fn parse_authorized_key_line(
 
 struct CertificateMetadata {
     signing_ca_fingerprint: Option<String>,
-    valid_after: u64,
-    valid_before: u64,
+    valid_after: Option<i64>,
+    valid_before: Option<i64>,
 }
 
 fn parse_certificate_metadata(cert_bytes: &[u8]) -> CertificateMetadata {
     let mut cursor = KeyBlobCursor::new(cert_bytes);
     let mut metadata = CertificateMetadata {
         signing_ca_fingerprint: None,
-        valid_after: 0,
-        valid_before: 0,
+        valid_after: None,
+        valid_before: None,
     };
-    if cursor.read_string().is_err() {
+    let Ok(cert_key_type) = cursor.read_string() else {
+        return metadata;
+    };
+    if cursor.read_bytes().is_err() {
         return metadata;
     }
-    if cursor.read_string().is_err() {
+    if skip_certificate_public_key_fields(&mut cursor, &cert_key_type).is_err() {
         return metadata;
     }
-    metadata.valid_after = cursor.read_u64().unwrap_or(0);
+    if cursor.read_u64().is_err() {
+        return metadata;
+    }
     if cursor.read_u32().is_err() {
         return metadata;
     }
     if cursor.read_string().is_err() {
         return metadata;
     }
-    if cursor.read_string_list().is_err() {
+    if cursor.read_bytes().is_err() {
         return metadata;
     }
-    metadata.valid_before = cursor.read_u64().unwrap_or(0);
-    let _ = cursor.read_u64();
-    let _ = cursor.read_options();
-    let _ = cursor.read_options();
-    let _ = cursor.read_string();
+    let Ok(valid_after) = cursor.read_u64() else {
+        return metadata;
+    };
+    let Ok(valid_before) = cursor.read_u64() else {
+        return metadata;
+    };
+    metadata.valid_after = i64::try_from(valid_after).ok();
+    metadata.valid_before = i64::try_from(valid_before).ok();
+    let _ = cursor.read_bytes();
+    let _ = cursor.read_bytes();
+    let _ = cursor.read_bytes();
     if let Ok(signing_key_bytes) = cursor.read_bytes()
         && !signing_key_bytes.is_empty()
     {
@@ -174,6 +184,35 @@ fn parse_certificate_metadata(cert_bytes: &[u8]) -> CertificateMetadata {
         ));
     }
     metadata
+}
+
+fn skip_certificate_public_key_fields(
+    cursor: &mut KeyBlobCursor<'_>,
+    cert_key_type: &str,
+) -> Result<()> {
+    match cert_key_type {
+        "ssh-rsa-cert-v01@openssh.com" => {
+            cursor.read_mpint()?;
+            cursor.read_mpint()?;
+        }
+        "ssh-dss-cert-v01@openssh.com" => {
+            cursor.read_mpint()?;
+            cursor.read_mpint()?;
+            cursor.read_mpint()?;
+            cursor.read_mpint()?;
+        }
+        "ssh-ed25519-cert-v01@openssh.com" => {
+            cursor.read_bytes()?;
+        }
+        "ecdsa-sha2-nistp256-cert-v01@openssh.com"
+        | "ecdsa-sha2-nistp384-cert-v01@openssh.com"
+        | "ecdsa-sha2-nistp521-cert-v01@openssh.com" => {
+            cursor.read_string()?;
+            cursor.read_bytes()?;
+        }
+        _ => anyhow::bail!("unsupported certificate key type"),
+    }
+    Ok(())
 }
 
 fn key_bits(key_type: &str, key_bytes: &[u8]) -> Option<i64> {
@@ -218,39 +257,25 @@ impl<'a> KeyBlobCursor<'a> {
     }
 
     fn read_u64(&mut self) -> Result<u64> {
-        let bytes = self.read_bytes()?;
-        let mut value = [0_u8; 8];
-        let start = 8usize.saturating_sub(bytes.len());
-        value[start..].copy_from_slice(bytes);
-        Ok(u64::from_be_bytes(value))
+        anyhow::ensure!(self.offset + 8 <= self.bytes.len(), "truncated u64 field");
+        let value = u64::from_be_bytes(
+            self.bytes[self.offset..self.offset + 8]
+                .try_into()
+                .map_err(|_| anyhow::anyhow!("truncated u64 field"))?,
+        );
+        self.offset += 8;
+        Ok(value)
     }
 
     fn read_u32(&mut self) -> Result<u32> {
-        let bytes = self.read_bytes()?;
-        let mut value = [0_u8; 4];
-        let start = 4usize.saturating_sub(bytes.len());
-        value[start..].copy_from_slice(bytes);
-        Ok(u32::from_be_bytes(value))
-    }
-
-    fn read_string_list(&mut self) -> Result<Vec<String>> {
-        let count = self.read_u32()? as usize;
-        let mut values = Vec::with_capacity(count);
-        for _ in 0..count {
-            values.push(self.read_string()?);
-        }
-        Ok(values)
-    }
-
-    fn read_options(&mut self) -> Result<BTreeMap<String, String>> {
-        let count = self.read_u32()? as usize;
-        let mut options = BTreeMap::new();
-        for _ in 0..count {
-            let key = self.read_string()?;
-            let value = self.read_string()?;
-            options.insert(key, value);
-        }
-        Ok(options)
+        anyhow::ensure!(self.offset + 4 <= self.bytes.len(), "truncated u32 field");
+        let value = u32::from_be_bytes(
+            self.bytes[self.offset..self.offset + 4]
+                .try_into()
+                .map_err(|_| anyhow::anyhow!("truncated u32 field"))?,
+        );
+        self.offset += 4;
+        Ok(value)
     }
 
     fn read_bytes(&mut self) -> Result<&'a [u8]> {
@@ -337,5 +362,52 @@ mod tests {
             username_from_authorized_keys_path("/home/deploy/.ssh/authorized_keys"),
             Some("deploy".to_string())
         );
+    }
+
+    #[test]
+    fn parses_certificate_validity_metadata() {
+        let mut cert = Vec::new();
+        push_ssh_string(&mut cert, b"ssh-ed25519-cert-v01@openssh.com");
+        push_ssh_string(&mut cert, b"nonce");
+        push_ssh_string(&mut cert, &[7_u8; 32]);
+        cert.extend_from_slice(&1_u64.to_be_bytes());
+        cert.extend_from_slice(&1_u32.to_be_bytes());
+        push_ssh_string(&mut cert, b"cert-id");
+        push_ssh_string(&mut cert, b"");
+        cert.extend_from_slice(&100_u64.to_be_bytes());
+        cert.extend_from_slice(&200_u64.to_be_bytes());
+        push_ssh_string(&mut cert, b"");
+        push_ssh_string(&mut cert, b"");
+        push_ssh_string(&mut cert, b"");
+
+        let mut signing_key = Vec::new();
+        push_ssh_string(&mut signing_key, b"ssh-ed25519");
+        push_ssh_string(&mut signing_key, &[8_u8; 32]);
+        push_ssh_string(&mut cert, &signing_key);
+        push_ssh_string(&mut cert, b"signature");
+
+        let encoded = STANDARD.encode(cert);
+        let keys = parse_authorized_keys(
+            &format!("ssh-ed25519-cert-v01@openssh.com {encoded}"),
+            1,
+            "deploy",
+            "/home/deploy/.ssh/authorized_keys",
+        );
+
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0].public_key.certificate_valid_after, Some(100));
+        assert_eq!(keys[0].public_key.certificate_valid_before, Some(200));
+        assert!(
+            keys[0]
+                .public_key
+                .certificate_signing_ca
+                .as_deref()
+                .is_some_and(|fingerprint| fingerprint.starts_with("SHA256:"))
+        );
+    }
+
+    fn push_ssh_string(output: &mut Vec<u8>, value: &[u8]) {
+        output.extend_from_slice(&(value.len() as u32).to_be_bytes());
+        output.extend_from_slice(value);
     }
 }

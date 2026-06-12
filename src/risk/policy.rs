@@ -59,8 +59,11 @@ pub fn load_optional(path: Option<&Path>) -> Result<RiskPolicy> {
         return Ok(RiskPolicy::default());
     };
 
-    let content = std::fs::read_to_string(path)
-        .with_context(|| format!("failed to read risk policy {}", path.display()))?;
+    let content = crate::security::read_text_file_limited(
+        path,
+        crate::security::MAX_CONFIG_FILE_BYTES,
+        "risk policy",
+    )?;
     serde_yaml::from_str(&content)
         .with_context(|| format!("failed to parse risk policy {}", path.display()))
 }

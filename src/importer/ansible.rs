@@ -1,15 +1,17 @@
 use crate::importer::store_hosts;
 use crate::models::ImportedHost;
-use anyhow::{Context, Result};
-use std::fs;
+use anyhow::Result;
 use std::path::Path;
 
 pub fn import_ansible_inventory(
     path: &Path,
     db_path: &Path,
 ) -> Result<crate::models::ImportSummary> {
-    let content = fs::read_to_string(path)
-        .with_context(|| format!("failed to read ansible inventory {}", path.display()))?;
+    let content = crate::security::read_text_file_limited(
+        path,
+        crate::security::MAX_IMPORT_FILE_BYTES,
+        "ansible inventory",
+    )?;
     let mut hosts = Vec::new();
     let mut current_group = String::new();
 

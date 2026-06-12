@@ -14,3 +14,7 @@ rules:
 
   USER_SERVICE_ACCOUNT_INTERACTIVE_SHELL:
     enabled: true
+
+  SSH_KEY_STALE:
+    enabled: true
+    high_threshold: 365

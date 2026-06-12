@@ -467,6 +467,80 @@ fn ensure_write_enabled(state: &AppState) -> Result<(), ApiError> {
     }
 }
 
+#[derive(Debug, Deserialize)]
+pub struct ComplianceQuery {
+    pub framework: Option<String>,
+}
+
+pub async fn compliance_report(
+    State(state): State<AppState>,
+    Query(query): Query<ComplianceQuery>,
+) -> Result<Json<crate::compliance::ComplianceReport>, ApiError> {
+    let framework = query.framework.as_deref().unwrap_or("all");
+    let risk_codes = crate::db::list_active_risk_codes(&state.db_path)?;
+    Ok(Json(crate::compliance::build_compliance_report(
+        framework, &risk_codes,
+    )))
+}
+
+pub async fn operations_metrics(
+    State(state): State<AppState>,
+) -> Result<Json<crate::models::OperationsMetricsRecord>, ApiError> {
+    Ok(Json(crate::db::load_operations_metrics(&state.db_path)?))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PathsQuery {
+    pub from: String,
+    pub to: String,
+    pub limit: Option<usize>,
+}
+
+pub async fn find_paths(
+    State(state): State<AppState>,
+    Query(query): Query<PathsQuery>,
+) -> Result<Json<crate::models::GraphPathsRecord>, ApiError> {
+    let from = required_param(&query.from, "from", API_REF_PARAM_MAX_BYTES)?;
+    let to = required_param(&query.to, "to", API_REF_PARAM_MAX_BYTES)?;
+    let Some(start) = crate::db::resolve_graph_node_ref_read_only(&state.db_path, from)? else {
+        return Err(ApiError::not_found("source graph node not found"));
+    };
+    let Some(end) = crate::db::resolve_graph_node_ref_read_only(&state.db_path, to)? else {
+        return Err(ApiError::not_found("destination graph node not found"));
+    };
+    let edges = crate::db::list_graph_edges_for_analysis(&state.db_path)?;
+    Ok(Json(graph::find_all_paths(
+        &edges,
+        start,
+        end,
+        query.limit.unwrap_or(10).min(100),
+    )))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct KeyBlastRadiusQuery {
+    pub fingerprint: String,
+}
+
+pub async fn key_blast_radius(
+    State(state): State<AppState>,
+    Query(query): Query<KeyBlastRadiusQuery>,
+) -> Result<Json<crate::models::KeyCompromiseBlastRadiusRecord>, ApiError> {
+    let fingerprint = required_param(&query.fingerprint, "fingerprint", API_REF_PARAM_MAX_BYTES)?;
+    let normalized = fingerprint.strip_prefix("key:").unwrap_or(fingerprint);
+    let entry_points =
+        crate::db::list_public_key_nodes_by_fingerprint(&state.db_path, normalized)?;
+    if entry_points.is_empty() {
+        return Err(ApiError::not_found("public key not found"));
+    }
+    let edges = crate::db::list_graph_edges_for_analysis(&state.db_path)?;
+    Ok(Json(graph::compute_key_compromise_blast_radius(
+        &edges,
+        normalized,
+        &entry_points,
+    )))
+}
+
 fn optional_param(
     value: Option<String>,
     name: &str,

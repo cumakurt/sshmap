@@ -130,9 +130,19 @@ pub enum Command {
         command: BaselineCommand,
     },
 
-    /// Compare baselines or baseline vs current risks
+    /// Compare baselines, current risks, or raw evidence drift
     #[command(long_about = crate::cli_help::DIFF_LONG)]
     Diff(DiffArgs),
+
+    /// Merge multiple SQLite inventories into one database
+    #[command(long_about = "Merge hosts, risks, and graph edges from multiple sshmap.db files.")]
+    Merge(MergeArgs),
+
+    /// Compliance framework mapping and reporting
+    Compliance {
+        #[command(subcommand)]
+        command: ComplianceCommand,
+    },
 
     /// Export the SSH access graph
     #[command(long_about = crate::cli_help::GRAPH_LONG)]
@@ -145,9 +155,17 @@ pub enum Command {
     #[command(long_about = crate::cli_help::PATH_LONG)]
     Path(PathArgs),
 
+    /// Find multiple directed paths between graph nodes
+    #[command(long_about = "Enumerate multiple directed access paths with optional weighted ranking.")]
+    Paths(PathsArgs),
+
     /// Measure lateral reach from a username
     #[command(long_about = crate::cli_help::BLAST_RADIUS_LONG)]
     BlastRadius(BlastRadiusArgs),
+
+    /// Measure compromise reach from a public key fingerprint
+    #[command(long_about = "Simulate lateral movement starting from a compromised SSH public key.")]
+    KeyBlastRadius(KeyBlastRadiusArgs),
 
     /// Import inventory or evidence files offline
     #[command(long_about = crate::cli_help::IMPORT_LONG)]
@@ -723,12 +741,61 @@ pub struct BaselineListArgs {
 #[derive(Debug, Args)]
 pub struct DiffArgs {
     /// Source baseline name
-    #[arg(long)]
-    pub from: String,
+    #[arg(long, required_unless_present = "evidence")]
+    pub from: Option<String>,
 
     /// Destination baseline name or 'latest' for current risks
-    #[arg(long, default_value = "latest")]
-    pub to: String,
+    #[arg(long, default_value = "latest", required_unless_present = "evidence")]
+    pub to: Option<String>,
+
+    /// Compare raw evidence drift instead of risk baselines
+    #[arg(long)]
+    pub evidence: bool,
+
+    /// Host ID, hostname, or IP for evidence drift comparison
+    #[arg(long, requires = "evidence")]
+    pub host: Option<String>,
+
+    /// Source scan run ID for evidence drift
+    #[arg(long, requires = "evidence")]
+    pub from_scan_run: Option<i64>,
+
+    /// Destination scan run ID for evidence drift
+    #[arg(long, requires = "evidence")]
+    pub to_scan_run: Option<i64>,
+
+    #[arg(long)]
+    pub json: bool,
+
+    #[arg(long, default_value = "sshmap.db", help = "SQLite database file path")]
+    pub db: PathBuf,
+}
+
+#[derive(Debug, Args)]
+pub struct MergeArgs {
+    /// Source SQLite databases to merge
+    #[arg(long = "from", value_name = "PATH", required = true)]
+    pub from: Vec<PathBuf>,
+
+    /// Output SQLite database path
+    #[arg(long, value_name = "PATH")]
+    pub output: PathBuf,
+
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ComplianceCommand {
+    /// Show CIS/STIG compliance summary for active risks
+    Report(ComplianceReportArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct ComplianceReportArgs {
+    /// Framework name: CIS, STIG, or all
+    #[arg(long, default_value = "all")]
+    pub framework: String,
 
     #[arg(long)]
     pub json: bool,
@@ -767,6 +834,29 @@ pub struct PathArgs {
     #[arg(long)]
     pub to: String,
 
+    /// Use weighted edge costs instead of hop count
+    #[arg(long)]
+    pub weighted: bool,
+
+    #[arg(long)]
+    pub json: bool,
+
+    #[arg(long, default_value = "sshmap.db", help = "SQLite database file path")]
+    pub db: PathBuf,
+}
+
+#[derive(Debug, Args)]
+pub struct PathsArgs {
+    #[arg(long)]
+    pub from: String,
+
+    #[arg(long)]
+    pub to: String,
+
+    /// Maximum number of paths to return
+    #[arg(long, default_value_t = 10)]
+    pub limit: usize,
+
     #[arg(long)]
     pub json: bool,
 
@@ -779,6 +869,19 @@ pub struct BlastRadiusArgs {
     /// Username to measure reach for across all host-local accounts
     #[arg(long)]
     pub user: String,
+
+    #[arg(long)]
+    pub json: bool,
+
+    #[arg(long, default_value = "sshmap.db", help = "SQLite database file path")]
+    pub db: PathBuf,
+}
+
+#[derive(Debug, Args)]
+pub struct KeyBlastRadiusArgs {
+    /// Public key fingerprint (key:SHA256:... or SHA256:...)
+    #[arg(long)]
+    pub fingerprint: String,
 
     #[arg(long)]
     pub json: bool,

@@ -4,6 +4,8 @@ import {
   apiPost,
   type BaselineDiffRecord,
   type BaselineRecord,
+  type ComplianceReport,
+  type OperationsMetricsRecord,
   type ScanRunRecord,
 } from "../api";
 
@@ -15,14 +17,20 @@ export function OperationsPage() {
   const [newBaseline, setNewBaseline] = useState("");
   const [diff, setDiff] = useState<BaselineDiffRecord | null>(null);
   const [message, setMessage] = useState("");
+  const [metrics, setMetrics] = useState<OperationsMetricsRecord | null>(null);
+  const [compliance, setCompliance] = useState<ComplianceReport | null>(null);
 
   async function load() {
-    const [runData, baselineData] = await Promise.all([
+    const [runData, baselineData, metricsData, complianceData] = await Promise.all([
       api<ScanRunRecord[]>("/api/scan-runs?limit=20"),
       api<BaselineRecord[]>("/api/baselines"),
+      api<OperationsMetricsRecord>("/api/operations-metrics"),
+      api<ComplianceReport>("/api/compliance?framework=all"),
     ]);
     setRuns(runData);
     setBaselines(baselineData);
+    setMetrics(metricsData);
+    setCompliance(complianceData);
     if (!from && baselineData.length > 0) {
       setFrom(baselineData[0].name);
     }
@@ -70,6 +78,22 @@ export function OperationsPage() {
 
   return (
     <>
+      <section className="panel">
+        <h2>Operations Metrics</h2>
+        {metrics ? (
+          <div className="metrics-grid">
+            <div className="metric"><span>Coverage</span><strong>{metrics.scan_coverage_percent.toFixed(1)}%</strong></div>
+            <div className="metric"><span>Hosts w/ Users</span><strong>{metrics.hosts_with_users}</strong></div>
+            <div className="metric"><span>Hosts w/o Users</span><strong>{metrics.hosts_without_users}</strong></div>
+          </div>
+        ) : null}
+        {compliance ? (
+          <p className="muted">
+            Compliance: {compliance.passing_controls}/{compliance.total_controls} controls passing ({compliance.compliance_percent.toFixed(1)}%)
+          </p>
+        ) : null}
+      </section>
+
       <section className="panel">
         <h2>Scan Runs</h2>
         <table>

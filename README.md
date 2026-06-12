@@ -6,7 +6,7 @@
 
 SSHMap is an agentless SSH exposure management CLI. It discovers SSH services, collects read-only configuration evidence, analyzes security risks, builds a directed access graph, and exposes inventory through a command-line interface, REST API, and React dashboard.
 
-**Current release:** `1.0.1`  
+**Current release:** `1.1.0`  
 **License:** [GNU General Public License v3.0 or later](LICENSE) (GPL-3.0-or-later)
 
 ## Author
@@ -44,8 +44,8 @@ SSHMap answers four practical questions for infrastructure and security teams:
 
 1. **Where is SSH exposed?** — TCP discovery finds open SSH ports and banners without authentication.
 2. **What SSH-related configuration exists?** — Authenticated scans and imports collect `sshd_config`, `authorized_keys`, sudoers, `known_hosts`, `/etc/hosts`, and client `ssh_config` evidence.
-3. **What is risky?** — A built-in risk engine flags weak daemon settings, unrestricted keys, key reuse, dangerous sudo rules, and combined escalation paths.
-4. **How can access spread?** — A directed graph models users, keys, hosts, and sudo relationships for path and blast-radius analysis.
+3. **What is risky?** — A built-in risk engine flags weak daemon settings, unrestricted keys, key reuse, dangerous sudo rules, combined escalation paths, stale keys, known OpenSSH CVEs, and server host key drift.
+4. **How can access spread?** — A directed graph models users, keys, hosts, sudo relationships, and SSH CA trust for path, blast-radius, and key-compromise simulation.
 
 All findings are stored in a local SQLite database. You can query them from the CLI, export reports, compare baselines over time, or serve them through a read-only API.
 
@@ -272,13 +272,18 @@ USER_HAS_SUDO_RULE
 SUDO_RULE_APPLIES_TO_HOST
 USER_HAS_PASSWORDLESS_SUDO
 CLIENT_CONFIG_PROXY_JUMP
+SSH_CA_SIGNED_PUBLIC_KEY
+SSH_CA_GRANTS_USER_ACCESS
 ```
 
 | Command | Purpose |
 |---------|---------|
 | `graph export` | Export JSON, Graphviz DOT, or Cytoscape JSON for visualization |
 | `path --from ... --to ...` | Shortest directed path between two graph nodes |
+| `path --weighted --from ... --to ...` | Weighted shortest path (NOPASSWD sudo and key edges prioritized) |
+| `paths --from ... --to ...` | Enumerate multiple directed paths (limit configurable) |
 | `blast-radius --user ...` | All hosts, keys, and passwordless-sudo targets reachable from a username |
+| `key-blast-radius --fingerprint SHA256:...` | Compromise simulation from a public key fingerprint |
 
 Node references use `type:value` syntax, e.g. `host:web01`, `user:deploy@web01`, `key:SHA256:...`.
 
@@ -294,8 +299,38 @@ Node references use `type:value` syntax, e.g. `host:web01`, `user:deploy@web01`,
 | `baseline list` | List saved baselines |
 | `diff --from <name> --to latest` | New, resolved, and unchanged risks since baseline |
 | `diff --from <a> --to <b>` | Compare any two baselines |
+| `diff --evidence --host <target>` | Compare raw evidence drift between scan runs |
 
-Use baselines after initial audit and after remediation sprints to prove progress.
+Use baselines after initial audit and after remediation sprints to prove progress. Use evidence drift to detect configuration changes before new risks appear.
+
+### Context-Aware Risk Scoring
+
+During `sshmap analyze`, severity and score are adjusted using host `environment`, `criticality`, `ssh_open`, and OS metadata. Production-exposed hosts escalate findings such as password authentication.
+
+### Server Host Key Inventory
+
+Discovery records SSH server host key fingerprints (when `ssh-keyscan` is available) and flags key changes or cross-host key conflicts.
+
+### OpenSSH CVE Correlation
+
+Discovery banners are parsed for OpenSSH versions and matched against an embedded offline CVE rule set (`SSH_OPENSSH_KNOWN_CVE`).
+
+### Key Rotation Policy
+
+Stale and never-rotated widely deployed keys produce `SSH_KEY_STALE` and `SSH_KEY_NEVER_ROTATED` findings. Tune age threshold with `SSH_KEY_STALE.high_threshold` in risk policy.
+
+### Compliance Mapping (`compliance`)
+
+```bash
+sshmap compliance report --framework CIS --db sshmap.db
+sshmap compliance report --framework all --json --db sshmap.db
+```
+
+### Multi-Database Merge (`merge`)
+
+```bash
+sshmap merge --from region-a.db --from region-b.db --output central.db
+```
 
 ### Reports and Exports (`report`, `export`)
 
@@ -466,7 +501,12 @@ sshmap exceptions add --code SSH_PASSWORD_AUTH_ENABLED --host-id 1 --reason "leg
 ```bash
 sshmap keys list --db sshmap.db
 sshmap path --from key:SHA256:exampleFingerprint --to host:web01 --db sshmap.db
+sshmap paths --from user:deploy --to host:db01 --limit 5 --db sshmap.db
+sshmap key-blast-radius --fingerprint SHA256:exampleFingerprint --db sshmap.db
 sshmap blast-radius --user deploy --db sshmap.db
+sshmap diff --evidence --host web01 --db sshmap.db
+sshmap compliance report --framework CIS --db sshmap.db
+sshmap merge --from region-a.db --from region-b.db --output central.db
 ```
 
 ### Reports
@@ -486,7 +526,7 @@ Embedded dashboard:
 sshmap serve --db sshmap.db --listen 127.0.0.1:8080 --read-only
 ```
 
-React dashboard (detail pages, filters, Quality view, Runs view, graph canvas with limit and edge filters):
+React dashboard (detail pages, filters, Quality view, Operations metrics, baseline risk trend, compliance summary, graph canvas with limit and edge filters):
 
 ```bash
 cd dashboard && npm ci && npm run build
@@ -534,6 +574,10 @@ GET /api/ssh-config
 GET /api/host-aliases
 GET /api/data-quality
 GET /api/remediation/{code}
+GET /api/compliance?framework=
+GET /api/operations-metrics
+GET /api/paths?from=...&to=...&limit=
+GET /api/key-blast-radius?fingerprint=
 POST /api/baselines
 POST /api/exceptions
 DELETE /api/exceptions/{id}

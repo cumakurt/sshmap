@@ -1,3 +1,5 @@
+use crate::compliance::ComplianceReport;
+use crate::evidence_drift::EvidenceDriftReport;
 use crate::models::{
     BaselineDiffRecord, BaselineRecord, BaselineRiskRecord, DetailedDatabaseStats,
     HostDetailRecord, HostRecord, KeyDetailRecord, KeyLocationRecord, KeySummaryRecord,
@@ -608,6 +610,69 @@ fn option_i64(value: Option<i64>) -> String {
     value
         .map(|value| value.to_string())
         .unwrap_or_else(|| "-".to_string())
+}
+
+pub fn format_evidence_drift_text(report: &EvidenceDriftReport) -> String {
+    let mut output = String::new();
+    writeln!(
+        output,
+        "Evidence drift for host {} (scan runs {} -> {})",
+        report
+            .hostname
+            .as_deref()
+            .or(report.ip_address.as_deref())
+            .unwrap_or("-"),
+        report.from_scan_run_id,
+        report.to_scan_run_id
+    )
+    .expect("writing to String cannot fail");
+    if report.changes.is_empty() {
+        writeln!(output, "No evidence changes detected.").expect("writing to String cannot fail");
+        return output;
+    }
+    for change in &report.changes {
+        writeln!(
+            output,
+            "- {}: +{} / -{} lines (hash {} -> {})",
+            change.evidence_type,
+            change.added_lines,
+            change.removed_lines,
+            change.from_hash,
+            change.to_hash
+        )
+        .expect("writing to String cannot fail");
+    }
+    output
+}
+
+pub fn format_compliance_report_text(report: &ComplianceReport) -> String {
+    let mut output = String::new();
+    writeln!(
+        output,
+        "Compliance report ({})",
+        report.framework
+    )
+    .expect("writing to String cannot fail");
+    writeln!(
+        output,
+        "Passing: {}/{} ({:.1}%)",
+        report.passing_controls,
+        report.total_controls,
+        report.compliance_percent
+    )
+    .expect("writing to String cannot fail");
+    for control in &report.controls {
+        writeln!(
+            output,
+            "- [{}] {} {}: {}",
+            control.status,
+            control.framework,
+            control.control_id,
+            control.title
+        )
+        .expect("writing to String cannot fail");
+    }
+    output
 }
 
 #[cfg(test)]

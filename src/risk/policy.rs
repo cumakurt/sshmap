@@ -44,6 +44,14 @@ impl RiskPolicy {
             .and_then(|rule| rule.critical_threshold)
             .unwrap_or(20)
     }
+
+    pub fn key_stale_days(&self) -> i64 {
+        self.rules
+            .get("SSH_KEY_STALE")
+            .and_then(|rule| rule.high_threshold)
+            .map(|value| value as i64)
+            .unwrap_or(365)
+    }
 }
 
 pub fn load_optional(path: Option<&Path>) -> Result<RiskPolicy> {

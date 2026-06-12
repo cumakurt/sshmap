@@ -11,6 +11,40 @@ export interface ApiSummary {
   critical_risks: number;
   high_risks: number;
   reused_keys: number;
+  scan_coverage_percent: number;
+  hosts_with_users: number;
+  severity_distribution: Record<string, number>;
+}
+
+export interface OperationsMetricsRecord {
+  scan_coverage_percent: number;
+  hosts_with_users: number;
+  hosts_without_users: number;
+  severity_distribution: Record<string, number>;
+  baseline_trend: BaselineTrendPoint[];
+}
+
+export interface BaselineTrendPoint {
+  name: string;
+  created_at: string;
+  critical_risks: number;
+  high_risks: number;
+  total_risks: number;
+}
+
+export interface ComplianceReport {
+  framework: string;
+  total_controls: number;
+  passing_controls: number;
+  failing_controls: number;
+  compliance_percent: number;
+  controls: Array<{
+    framework: string;
+    control_id: string;
+    title: string;
+    status: string;
+    failing_risk_codes: string[];
+  }>;
 }
 
 export interface HostRecord {

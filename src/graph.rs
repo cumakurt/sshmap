@@ -1,4 +1,7 @@
-use crate::models::{BlastRadiusRecord, GraphEdgeRecord, GraphNodeRecord, GraphPathRecord};
+use crate::models::{
+    BlastRadiusRecord, GraphEdgeRecord, GraphNodeRecord, GraphPathRecord, GraphPathsRecord,
+    KeyCompromiseBlastRadiusRecord,
+};
 use anyhow::{Result, bail};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -30,46 +33,182 @@ pub fn render_graph_export(edges: &[GraphEdgeRecord], format: GraphExportFormat)
     }
 }
 
+pub fn edge_traversal_weight(edge: &GraphEdgeRecord) -> i64 {
+    match edge.edge_type.as_str() {
+        "USER_HAS_PASSWORDLESS_SUDO" => 1,
+        "PUBLIC_KEY_CAN_LOGIN_TO_USER" => 2,
+        "SSH_CA_GRANTS_USER_ACCESS" => 2,
+        "USER_ON_HOST" | "HOST_HAS_USER" => 3,
+        "PUBLIC_KEY_REUSED_ON_HOST" => 4,
+        "USER_HAS_SUDO_RULE" | "SUDO_RULE_APPLIES_TO_HOST" => 5,
+        "CLIENT_CONFIG_PROXY_JUMP" => 6,
+        _ => edge.weight.max(1),
+    }
+}
+
+pub fn find_weighted_path(
+    edges: &[GraphEdgeRecord],
+    from: GraphNodeRecord,
+    to: GraphNodeRecord,
+) -> GraphPathRecord {
+    find_path_with_strategy(edges, from, to, PathStrategy::WeightedShortest)
+}
+
+pub fn find_all_paths(
+    edges: &[GraphEdgeRecord],
+    from: GraphNodeRecord,
+    to: GraphNodeRecord,
+    max_paths: usize,
+) -> GraphPathsRecord {
+    let start = NodeKey::from_node(&from);
+    let goal = NodeKey::from_node(&to);
+    let adjacency = build_adjacency(edges);
+    let labels = build_label_map(edges, &from, &to);
+    let mut paths = Vec::new();
+    let mut current_path = Vec::<GraphEdgeRecord>::new();
+    let mut visited = BTreeSet::from([start.clone()]);
+
+    collect_paths(
+        &adjacency,
+        &labels,
+        &start,
+        &goal,
+        &mut visited,
+        &mut current_path,
+        &mut paths,
+        max_paths,
+    );
+
+    let path_records = paths
+        .into_iter()
+        .map(|path_edges| build_path_record(&from, &to, &labels, &path_edges))
+        .collect::<Vec<_>>();
+
+    GraphPathsRecord {
+        from,
+        to,
+        truncated: path_records.len() >= max_paths,
+        paths: path_records,
+    }
+}
+
+pub fn compute_key_compromise_blast_radius(
+    edges: &[GraphEdgeRecord],
+    fingerprint: &str,
+    entry_points: &[GraphNodeRecord],
+) -> KeyCompromiseBlastRadiusRecord {
+    let mut adjacency: BTreeMap<NodeKey, Vec<&GraphEdgeRecord>> = BTreeMap::new();
+    let mut labels: BTreeMap<NodeKey, GraphNodeRecord> = BTreeMap::new();
+
+    for edge in edges {
+        let from_key = NodeKey::new(&edge.from_type, edge.from_id);
+        let to_key = NodeKey::new(&edge.to_type, edge.to_id);
+        labels.insert(
+            from_key.clone(),
+            GraphNodeRecord {
+                node_type: edge.from_type.clone(),
+                node_id: edge.from_id,
+                label: edge.from_label.clone(),
+            },
+        );
+        labels.insert(
+            to_key.clone(),
+            GraphNodeRecord {
+                node_type: edge.to_type.clone(),
+                node_id: edge.to_id,
+                label: edge.to_label.clone(),
+            },
+        );
+        adjacency.entry(from_key).or_default().push(edge);
+    }
+
+    let mut reachable_hosts = BTreeMap::<NodeKey, GraphNodeRecord>::new();
+    let mut reachable_users = BTreeMap::<NodeKey, GraphNodeRecord>::new();
+    let mut passwordless_sudo_hosts = BTreeMap::<NodeKey, GraphNodeRecord>::new();
+    let mut total_path_weight = 0i64;
+
+    for entry in entry_points {
+        let start = NodeKey::from_node(entry);
+        let mut queue = VecDeque::from([(start.clone(), 0i64)]);
+        let mut best_weight = BTreeMap::from([(start.clone(), 0i64)]);
+
+        while let Some((node, weight)) = queue.pop_front() {
+            if let Some(record) = labels.get(&node) {
+                match record.node_type.as_str() {
+                    "HOST" => {
+                        reachable_hosts.insert(node.clone(), record.clone());
+                    }
+                    "USER" => {
+                        reachable_users.insert(node.clone(), record.clone());
+                    }
+                    _ => {}
+                }
+            }
+
+            for edge in adjacency.get(&node).into_iter().flatten() {
+                let next = NodeKey::new(&edge.to_type, edge.to_id);
+                let next_weight = weight + edge_traversal_weight(edge);
+                if best_weight
+                    .get(&next)
+                    .is_some_and(|existing| *existing <= next_weight)
+                {
+                    continue;
+                }
+                best_weight.insert(next.clone(), next_weight);
+                total_path_weight = total_path_weight.max(next_weight);
+                if edge.edge_type == "USER_HAS_PASSWORDLESS_SUDO"
+                    && let Some(record) = labels.get(&next)
+                    && record.node_type == "HOST"
+                {
+                    passwordless_sudo_hosts.insert(next.clone(), record.clone());
+                }
+                queue.push_back((next, next_weight));
+            }
+        }
+    }
+
+    let reachable_hosts_vec = reachable_hosts.into_values().collect::<Vec<_>>();
+    KeyCompromiseBlastRadiusRecord {
+        fingerprint: fingerprint.to_string(),
+        entry_points: entry_points.to_vec(),
+        host_count: reachable_hosts_vec.len(),
+        reachable_hosts: reachable_hosts_vec,
+        reachable_users: reachable_users.into_values().collect(),
+        passwordless_sudo_hosts: passwordless_sudo_hosts.into_values().collect(),
+        total_path_weight,
+    }
+}
+
+enum PathStrategy {
+    BreadthFirst,
+    WeightedShortest,
+}
+
 pub fn find_path(
     edges: &[GraphEdgeRecord],
     from: GraphNodeRecord,
     to: GraphNodeRecord,
 ) -> GraphPathRecord {
+    find_path_with_strategy(edges, from, to, PathStrategy::BreadthFirst)
+}
+
+fn find_path_with_strategy(
+    edges: &[GraphEdgeRecord],
+    from: GraphNodeRecord,
+    to: GraphNodeRecord,
+    strategy: PathStrategy,
+) -> GraphPathRecord {
     let start = NodeKey::from_node(&from);
     let goal = NodeKey::from_node(&to);
-    let mut adjacency: BTreeMap<NodeKey, Vec<&GraphEdgeRecord>> = BTreeMap::new();
-    let mut labels: BTreeMap<NodeKey, String> = BTreeMap::new();
+    let adjacency = build_adjacency(edges);
+    let labels = build_label_map(edges, &from, &to);
 
-    labels.insert(start.clone(), from.label.clone());
-    labels.insert(goal.clone(), to.label.clone());
+    let path_edges = match strategy {
+        PathStrategy::BreadthFirst => bfs_path_edges(&adjacency, &start, &goal),
+        PathStrategy::WeightedShortest => dijkstra_path_edges(&adjacency, &start, &goal),
+    };
 
-    for edge in edges {
-        let from_key = NodeKey::new(&edge.from_type, edge.from_id);
-        let to_key = NodeKey::new(&edge.to_type, edge.to_id);
-        labels.insert(from_key.clone(), edge.from_label.clone());
-        labels.insert(to_key, edge.to_label.clone());
-        adjacency.entry(from_key).or_default().push(edge);
-    }
-
-    let mut queue = VecDeque::from([start.clone()]);
-    let mut visited = BTreeSet::from([start.clone()]);
-    let mut parent: BTreeMap<NodeKey, (NodeKey, i64)> = BTreeMap::new();
-
-    while let Some(node) = queue.pop_front() {
-        if node == goal {
-            break;
-        }
-
-        for edge in adjacency.get(&node).into_iter().flatten() {
-            let next = NodeKey::new(&edge.to_type, edge.to_id);
-            if visited.insert(next.clone()) {
-                parent.insert(next.clone(), (node.clone(), edge.id));
-                queue.push_back(next);
-            }
-        }
-    }
-
-    if !visited.contains(&goal) {
+    if path_edges.is_empty() && start != goal {
         return GraphPathRecord {
             found: false,
             from,
@@ -79,14 +218,114 @@ pub fn find_path(
         };
     }
 
-    let edge_by_id = edges
-        .iter()
-        .map(|edge| (edge.id, edge))
+    build_path_record(&from, &to, &labels, &path_edges)
+}
+
+fn build_adjacency(edges: &[GraphEdgeRecord]) -> BTreeMap<NodeKey, Vec<&GraphEdgeRecord>> {
+    let mut adjacency: BTreeMap<NodeKey, Vec<&GraphEdgeRecord>> = BTreeMap::new();
+    for edge in edges {
+        let from_key = NodeKey::new(&edge.from_type, edge.from_id);
+        adjacency.entry(from_key).or_default().push(edge);
+    }
+    adjacency
+}
+
+fn build_label_map(
+    edges: &[GraphEdgeRecord],
+    from: &GraphNodeRecord,
+    to: &GraphNodeRecord,
+) -> BTreeMap<NodeKey, String> {
+    let start = NodeKey::from_node(from);
+    let goal = NodeKey::from_node(to);
+    let mut labels: BTreeMap<NodeKey, String> = BTreeMap::new();
+    labels.insert(start, from.label.clone());
+    labels.insert(goal, to.label.clone());
+    for edge in edges {
+        let from_key = NodeKey::new(&edge.from_type, edge.from_id);
+        let to_key = NodeKey::new(&edge.to_type, edge.to_id);
+        labels.insert(from_key, edge.from_label.clone());
+        labels.insert(to_key, edge.to_label.clone());
+    }
+    labels
+}
+
+fn bfs_path_edges(
+    adjacency: &BTreeMap<NodeKey, Vec<&GraphEdgeRecord>>,
+    start: &NodeKey,
+    goal: &NodeKey,
+) -> Vec<GraphEdgeRecord> {
+    let mut queue = VecDeque::from([start.clone()]);
+    let mut visited = BTreeSet::from([start.clone()]);
+    let mut parent: BTreeMap<NodeKey, (NodeKey, i64)> = BTreeMap::new();
+
+    while let Some(node) = queue.pop_front() {
+        if node == *goal {
+            break;
+        }
+        for edge in adjacency.get(&node).into_iter().flatten() {
+            let next = NodeKey::new(&edge.to_type, edge.to_id);
+            if visited.insert(next.clone()) {
+                parent.insert(next.clone(), (node.clone(), edge.id));
+                queue.push_back(next);
+            }
+        }
+    }
+
+    reconstruct_path_edges(adjacency, start, goal, &parent)
+}
+
+fn dijkstra_path_edges(
+    adjacency: &BTreeMap<NodeKey, Vec<&GraphEdgeRecord>>,
+    start: &NodeKey,
+    goal: &NodeKey,
+) -> Vec<GraphEdgeRecord> {
+    let mut distances = BTreeMap::from([(start.clone(), 0i64)]);
+    let mut parent: BTreeMap<NodeKey, (NodeKey, i64)> = BTreeMap::new();
+    let mut queue = BTreeSet::from([(0i64, start.clone())]);
+
+    while let Some((cost, node)) = queue.pop_first() {
+        if node == *goal {
+            break;
+        }
+        if distances.get(&node).is_some_and(|best| *best < cost) {
+            continue;
+        }
+        for edge in adjacency.get(&node).into_iter().flatten() {
+            let next = NodeKey::new(&edge.to_type, edge.to_id);
+            let next_cost = cost + edge_traversal_weight(edge);
+            if distances
+                .get(&next)
+                .is_some_and(|existing| *existing <= next_cost)
+            {
+                continue;
+            }
+            distances.insert(next.clone(), next_cost);
+            parent.insert(next.clone(), (node.clone(), edge.id));
+            queue.insert((next_cost, next));
+        }
+    }
+
+    reconstruct_path_edges(adjacency, start, goal, &parent)
+}
+
+fn reconstruct_path_edges(
+    adjacency: &BTreeMap<NodeKey, Vec<&GraphEdgeRecord>>,
+    start: &NodeKey,
+    goal: &NodeKey,
+    parent: &BTreeMap<NodeKey, (NodeKey, i64)>,
+) -> Vec<GraphEdgeRecord> {
+    if !parent.contains_key(goal) && start != goal {
+        return Vec::new();
+    }
+
+    let edge_by_id = adjacency
+        .values()
+        .flatten()
+        .map(|edge| (edge.id, *edge))
         .collect::<BTreeMap<_, _>>();
     let mut path_edges = Vec::new();
     let mut current = goal.clone();
-
-    while current != start {
+    while current != *start {
         let Some((previous, edge_id)) = parent.get(&current) else {
             break;
         };
@@ -96,10 +335,19 @@ pub fn find_path(
         current = previous.clone();
     }
     path_edges.reverse();
+    path_edges
+}
 
+fn build_path_record(
+    from: &GraphNodeRecord,
+    to: &GraphNodeRecord,
+    labels: &BTreeMap<NodeKey, String>,
+    path_edges: &[GraphEdgeRecord],
+) -> GraphPathRecord {
+    let start = NodeKey::from_node(from);
     let mut path_nodes = Vec::new();
-    path_nodes.push(node_record_from_key(&start, &labels));
-    for edge in &path_edges {
+    path_nodes.push(node_record_from_key(&start, labels));
+    for edge in path_edges {
         path_nodes.push(GraphNodeRecord {
             node_type: edge.to_type.clone(),
             node_id: edge.to_id,
@@ -108,11 +356,53 @@ pub fn find_path(
     }
 
     GraphPathRecord {
-        found: true,
-        from,
-        to,
+        found: !path_edges.is_empty() || from.node_id == to.node_id,
+        from: from.clone(),
+        to: to.clone(),
         nodes: path_nodes,
-        edges: path_edges,
+        edges: path_edges.to_vec(),
+    }
+}
+
+fn collect_paths(
+    adjacency: &BTreeMap<NodeKey, Vec<&GraphEdgeRecord>>,
+    labels: &BTreeMap<NodeKey, String>,
+    current: &NodeKey,
+    goal: &NodeKey,
+    visited: &mut BTreeSet<NodeKey>,
+    current_path: &mut Vec<GraphEdgeRecord>,
+    paths: &mut Vec<Vec<GraphEdgeRecord>>,
+    max_paths: usize,
+) {
+    if paths.len() >= max_paths {
+        return;
+    }
+    if current == goal {
+        paths.push(current_path.clone());
+        return;
+    }
+
+    for edge in adjacency.get(current).into_iter().flatten() {
+        let next = NodeKey::new(&edge.to_type, edge.to_id);
+        if !visited.insert(next.clone()) {
+            continue;
+        }
+        current_path.push((*edge).clone());
+        collect_paths(
+            adjacency,
+            labels,
+            &next,
+            goal,
+            visited,
+            current_path,
+            paths,
+            max_paths,
+        );
+        current_path.pop();
+        visited.remove(&next);
+        if paths.len() >= max_paths {
+            return;
+        }
     }
 }
 
@@ -284,6 +574,56 @@ pub fn format_blast_radius_text(record: &BlastRadiusRecord) -> String {
         }
     }
 
+    output
+}
+
+pub fn format_paths_text(record: &GraphPathsRecord) -> String {
+    let mut output = String::new();
+    writeln!(
+        output,
+        "Found {} path(s) from {}:{} to {}:{}",
+        record.paths.len(),
+        record.from.node_type,
+        record.from.label,
+        record.to.node_type,
+        record.to.label
+    )
+    .expect("writing to String cannot fail");
+    if record.truncated {
+        writeln!(output, "Path list truncated at configured limit.")
+            .expect("writing to String cannot fail");
+    }
+    for (index, path) in record.paths.iter().enumerate() {
+        writeln!(output, "\nPath {}:", index + 1).expect("writing to String cannot fail");
+        output.push_str(&format_path_text(path));
+    }
+    output
+}
+
+pub fn format_key_blast_radius_text(record: &KeyCompromiseBlastRadiusRecord) -> String {
+    let mut output = String::new();
+    writeln!(
+        output,
+        "Key compromise blast radius for {}",
+        record.fingerprint
+    )
+    .expect("writing to String cannot fail");
+    writeln!(output, "Reachable hosts: {}", record.host_count)
+        .expect("writing to String cannot fail");
+    writeln!(
+        output,
+        "Reachable users: {}",
+        record.reachable_users.len()
+    )
+    .expect("writing to String cannot fail");
+    writeln!(
+        output,
+        "Passwordless sudo hosts: {}",
+        record.passwordless_sudo_hosts.len()
+    )
+    .expect("writing to String cannot fail");
+    writeln!(output, "Max path weight: {}", record.total_path_weight)
+        .expect("writing to String cannot fail");
     output
 }
 

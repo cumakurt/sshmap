@@ -1,3 +1,4 @@
+mod enrichment;
 mod policy;
 
 pub use policy::{RiskPolicy, load_optional as load_risk_policy};
@@ -7,6 +8,8 @@ use crate::models::{
     ParsedSudoRule, RemediationRecord,
 };
 use std::collections::{BTreeMap, BTreeSet};
+
+pub use enrichment::RiskEnrichmentInput;
 
 const VALID_RISK_SEVERITIES: &[&str] = &["CRITICAL", "HIGH", "MEDIUM", "LOW"];
 
@@ -188,6 +191,23 @@ pub fn remediation_for_code(risk_code: &str) -> Option<RemediationRecord> {
 }
 
 pub fn generate_risks(analysis: &NormalizedAnalysis, policy: &RiskPolicy) -> Vec<GeneratedRisk> {
+    generate_risks_with_enrichment(
+        analysis,
+        policy,
+        &enrichment::RiskEnrichmentInput {
+            hosts: &[],
+            host_banners: &BTreeMap::new(),
+            key_ages: &[],
+            server_host_keys: &[],
+        },
+    )
+}
+
+pub fn generate_risks_with_enrichment(
+    analysis: &NormalizedAnalysis,
+    policy: &RiskPolicy,
+    enrichment_input: &enrichment::RiskEnrichmentInput<'_>,
+) -> Vec<GeneratedRisk> {
     let mut risks = Vec::new();
     risks.extend(generate_sshd_config_risks(analysis));
     risks.extend(generate_user_account_risks(analysis));
@@ -196,6 +216,13 @@ pub fn generate_risks(analysis: &NormalizedAnalysis, policy: &RiskPolicy) -> Vec
     risks.extend(generate_client_config_risks(analysis));
     risks.extend(generate_key_reuse_risks(analysis, policy));
     risks.extend(generate_combined_risks(analysis));
+    risks.extend(enrichment::generate_banner_cve_risks(enrichment_input));
+    risks.extend(enrichment::generate_key_rotation_risks(
+        enrichment_input,
+        policy,
+    ));
+    risks.extend(enrichment::generate_server_host_key_risks(enrichment_input));
+    enrichment::apply_context_scoring(&mut risks, enrichment_input.hosts);
     policy::apply_policy(risks, policy)
 }
 
@@ -1224,6 +1251,7 @@ mod tests {
                 key_bits: Some(256),
                 key_comment: None,
                 normalized_public_key: format!("ssh-ed25519 {fingerprint}"),
+                certificate_signing_ca: None,
             },
             source_file: format!("/home/{username}/.ssh/authorized_keys"),
             line_number: 1,

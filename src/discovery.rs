@@ -1,6 +1,8 @@
 use crate::db;
+use crate::host_key_scan::{ScannedServerHostKey, scan_server_host_keys};
 use crate::models::ScanRunSummary;
 use crate::scope::TargetEndpoint;
+use crate::ssh_version::parse_openssh_banner;
 use anyhow::Result;
 use futures::stream::{self, StreamExt};
 use serde::Serialize;
@@ -17,6 +19,8 @@ pub struct DiscoveryResult {
     pub port: u16,
     pub ssh_open: bool,
     pub banner: Option<String>,
+    pub openssh_version: Option<String>,
+    pub server_keys: Vec<ScannedServerHostKey>,
     pub error: Option<String>,
 }
 
@@ -66,21 +70,34 @@ async fn scan_target(target: TargetEndpoint, timeout_duration: Duration) -> Disc
     let address = format!("{}:{}", target.host, target.port);
     match timeout(timeout_duration, TcpStream::connect(&address)).await {
         Ok(Ok(mut stream)) => match read_ssh_banner(&mut stream, timeout_duration).await {
-            Ok(banner) => DiscoveryResult {
-                host: target.host,
-                port: target.port,
-                ssh_open: banner
+            Ok(banner) => {
+                let ssh_open = banner
                     .as_deref()
                     .map(|value| value.starts_with("SSH-"))
-                    .unwrap_or(true),
-                banner,
-                error: None,
-            },
+                    .unwrap_or(true);
+                let openssh_version = parse_openssh_banner(banner.as_deref()).map(|version| version.raw);
+                let server_keys = if ssh_open {
+                    scan_server_host_keys(&target.host, target.port, timeout_duration).await
+                } else {
+                    Vec::new()
+                };
+                DiscoveryResult {
+                    host: target.host,
+                    port: target.port,
+                    ssh_open,
+                    banner,
+                    openssh_version,
+                    server_keys,
+                    error: None,
+                }
+            }
             Err(error) => DiscoveryResult {
                 host: target.host,
                 port: target.port,
                 ssh_open: true,
                 banner: None,
+                openssh_version: None,
+                server_keys: Vec::new(),
                 error: Some(error.to_string()),
             },
         },
@@ -89,6 +106,8 @@ async fn scan_target(target: TargetEndpoint, timeout_duration: Duration) -> Disc
             port: target.port,
             ssh_open: false,
             banner: None,
+            openssh_version: None,
+            server_keys: Vec::new(),
             error: Some(error.to_string()),
         },
         Err(_) => DiscoveryResult {
@@ -96,6 +115,8 @@ async fn scan_target(target: TargetEndpoint, timeout_duration: Duration) -> Disc
             port: target.port,
             ssh_open: false,
             banner: None,
+            openssh_version: None,
+            server_keys: Vec::new(),
             error: Some("connection timed out".to_string()),
         },
     }
@@ -132,6 +153,8 @@ mod tests {
             port: 22,
             ssh_open: true,
             banner: None,
+            openssh_version: None,
+            server_keys: Vec::new(),
             error: None,
         };
 
@@ -145,6 +168,8 @@ mod tests {
             port: 22,
             ssh_open: true,
             banner: None,
+            openssh_version: None,
+            server_keys: Vec::new(),
             error: None,
         };
 

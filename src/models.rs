@@ -307,6 +307,7 @@ pub struct ParsedPublicKey {
     pub key_bits: Option<i64>,
     pub key_comment: Option<String>,
     pub normalized_public_key: String,
+    pub certificate_signing_ca: Option<String>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -557,6 +558,58 @@ pub struct ApiSummary {
     pub critical_risks: usize,
     pub high_risks: usize,
     pub reused_keys: usize,
+    pub scan_coverage_percent: f64,
+    pub hosts_with_users: usize,
+    pub severity_distribution: BTreeMap<String, usize>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HostContextRecord {
+    pub host_id: i64,
+    pub hostname: Option<String>,
+    pub ip_address: Option<String>,
+    pub environment: Option<String>,
+    pub criticality: Option<String>,
+    pub ssh_open: bool,
+    pub os_family: Option<String>,
+    pub os_version: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HostServerKeyRecord {
+    pub host_id: i64,
+    pub key_type: String,
+    pub fingerprint_sha256: String,
+    pub first_seen: String,
+    pub last_seen: String,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PublicKeyAgeRecord {
+    pub fingerprint_sha256: String,
+    pub first_seen: String,
+    pub last_seen: String,
+    pub age_days: i64,
+    pub host_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct OperationsMetricsRecord {
+    pub scan_coverage_percent: f64,
+    pub hosts_with_users: usize,
+    pub hosts_without_users: usize,
+    pub severity_distribution: BTreeMap<String, usize>,
+    pub baseline_trend: Vec<BaselineTrendPoint>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BaselineTrendPoint {
+    pub name: String,
+    pub created_at: String,
+    pub critical_risks: usize,
+    pub high_risks: usize,
+    pub total_risks: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -653,6 +706,25 @@ pub struct BlastRadiusRecord {
     pub reachable_sudo_rules: Vec<GraphNodeRecord>,
     pub host_count: usize,
     pub passwordless_sudo_host_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct GraphPathsRecord {
+    pub from: GraphNodeRecord,
+    pub to: GraphNodeRecord,
+    pub paths: Vec<GraphPathRecord>,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct KeyCompromiseBlastRadiusRecord {
+    pub fingerprint: String,
+    pub entry_points: Vec<GraphNodeRecord>,
+    pub reachable_hosts: Vec<GraphNodeRecord>,
+    pub reachable_users: Vec<GraphNodeRecord>,
+    pub passwordless_sudo_hosts: Vec<GraphNodeRecord>,
+    pub host_count: usize,
+    pub total_path_weight: i64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

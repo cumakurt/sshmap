@@ -1,15 +1,18 @@
 use crate::baseline;
 use crate::discovery::DiscoveryResult;
+use crate::host_key_scan::ScannedServerHostKey;
 use crate::models::{
     AuditEventRecord, BaselineDiffRecord, BaselineRecord, BaselineRiskRecord, BaselineSummary,
-    DataQualityFindingRecord, DatabaseStats, DetailedDatabaseStats, GeneratedRisk, GraphEdgeRecord,
-    GraphNodeRecord, HostAliasRecord, HostDetailRecord, HostQuery, HostRecord, HostScanResult,
-    ImportSummary, ImportedHost, KeyDetailRecord, KeyLocationRecord, KeySummaryRecord,
-    KnownHostEntryRecord, NewRiskException, NormalizedAnalysis, ParsedAuthorizedKey, ParsedGroup,
-    ParsedHostAlias, ParsedHostMetadata, ParsedPublicKey, ParsedUser, RawEvidenceForAnalysis,
-    RawEvidenceRecord, RemoteScanSummary, RiskExceptionRecord, RiskQuery, RiskRecord,
-    ScanRunDetailRecord, ScanRunRecord, ScanRunSummary, SshClientConfigEntryRecord, SudoRuleRecord,
-    UserAccountRecord, UserDetailRecord, UserQuery, UserSummaryRecord,
+    BaselineTrendPoint, DataQualityFindingRecord, DatabaseStats, DetailedDatabaseStats,
+    GeneratedRisk, GraphEdgeRecord, GraphNodeRecord, HostAliasRecord, HostContextRecord,
+    HostDetailRecord, HostQuery, HostRecord, HostScanResult, HostServerKeyRecord, ImportSummary,
+    ImportedHost, KeyDetailRecord, KeyLocationRecord, KeySummaryRecord, KnownHostEntryRecord,
+    NewRiskException, NormalizedAnalysis, OperationsMetricsRecord, ParsedAuthorizedKey,
+    ParsedGroup, ParsedHostAlias, ParsedHostMetadata, ParsedPublicKey, ParsedUser,
+    PublicKeyAgeRecord, RawEvidenceForAnalysis, RawEvidenceRecord, RemoteScanSummary,
+    RiskExceptionRecord, RiskQuery, RiskRecord, ScanRunDetailRecord, ScanRunRecord, ScanRunSummary,
+    SshClientConfigEntryRecord, SudoRuleRecord, UserAccountRecord, UserDetailRecord, UserQuery,
+    UserSummaryRecord,
 };
 use crate::target::{hostname_hint, is_ip_address, parse_host_target};
 use anyhow::{Context, Result, bail};
@@ -30,6 +33,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (
         9,
         include_str!("../migrations/009_host_aliases_quality.sql"),
+    ),
+    (
+        10,
+        include_str!("../migrations/010_server_keys_compliance.sql"),
     ),
 ];
 
@@ -196,7 +203,10 @@ pub fn store_discovery_results(path: &Path, results: &[DiscoveryResult]) -> Resu
 
     let tx = connection.transaction()?;
     for result in results {
-        upsert_host(&tx, result)?;
+        let host_id = upsert_host(&tx, result)?;
+        if !result.server_keys.is_empty() {
+            upsert_host_server_keys(&tx, host_id, &result.server_keys, "discover")?;
+        }
     }
     tx.commit()?;
 
@@ -535,6 +545,29 @@ fn list_user_nodes_by_username_connection(
 
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .context("failed to list user graph nodes")
+}
+
+pub fn list_public_key_nodes_by_fingerprint(
+    path: &Path,
+    fingerprint: &str,
+) -> Result<Vec<GraphNodeRecord>> {
+    initialize_database(path)?;
+    let connection = Connection::open(path)
+        .with_context(|| format!("failed to open database at {}", path.display()))?;
+    apply_pragmas(&connection)?;
+    let normalized = fingerprint.strip_prefix("key:").unwrap_or(fingerprint);
+    let mut statement = connection.prepare(
+        "SELECT id, fingerprint_sha256 FROM public_keys WHERE fingerprint_sha256 = ?1",
+    )?;
+    let rows = statement.query_map(params![normalized], |row| {
+        Ok(GraphNodeRecord {
+            node_type: "PUBLIC_KEY".to_string(),
+            node_id: row.get(0)?,
+            label: row.get(1)?,
+        })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .context("failed to list public key graph nodes")
 }
 
 pub fn store_imported_hosts(
@@ -1382,6 +1415,242 @@ pub fn diff_baselines(path: &Path, from: &str, to: &str) -> Result<BaselineDiffR
     })
 }
 
+pub fn load_host_context_records(path: &Path) -> Result<Vec<HostContextRecord>> {
+    initialize_database(path)?;
+    let connection = Connection::open(path)
+        .with_context(|| format!("failed to open database at {}", path.display()))?;
+    apply_pragmas(&connection)?;
+    let mut statement = connection.prepare(
+        "SELECT id, hostname, ip_address, environment, criticality, ssh_open, os_family, os_version
+         FROM hosts",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok(HostContextRecord {
+            host_id: row.get(0)?,
+            hostname: row.get(1)?,
+            ip_address: Some(row.get(2)?),
+            environment: row.get(3)?,
+            criticality: row.get(4)?,
+            ssh_open: row.get::<_, i64>(5)? != 0,
+            os_family: row.get(6)?,
+            os_version: row.get(7)?,
+        })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .context("failed to load host context records")
+}
+
+pub fn load_host_banners(path: &Path) -> Result<std::collections::BTreeMap<i64, String>> {
+    initialize_database(path)?;
+    let connection = Connection::open(path)
+        .with_context(|| format!("failed to open database at {}", path.display()))?;
+    apply_pragmas(&connection)?;
+    let mut statement =
+        connection.prepare("SELECT id, ssh_banner FROM hosts WHERE ssh_banner IS NOT NULL")?;
+    let rows = statement.query_map([], |row| {
+        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+    })?;
+    Ok(rows
+        .filter_map(|row| row.ok())
+        .collect::<std::collections::BTreeMap<_, _>>())
+}
+
+pub fn load_public_key_age_records(path: &Path) -> Result<Vec<PublicKeyAgeRecord>> {
+    initialize_database(path)?;
+    let connection = Connection::open(path)
+        .with_context(|| format!("failed to open database at {}", path.display()))?;
+    apply_pragmas(&connection)?;
+    let mut statement = connection.prepare(
+        "SELECT pk.fingerprint_sha256, pk.first_seen, pk.last_seen,
+                CAST((julianday('now') - julianday(pk.first_seen)) AS INTEGER) AS age_days,
+                COUNT(DISTINCT ak.host_id) AS host_count
+         FROM public_keys pk
+         LEFT JOIN authorized_keys ak ON ak.public_key_id = pk.id
+         GROUP BY pk.id",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok(PublicKeyAgeRecord {
+            fingerprint_sha256: row.get(0)?,
+            first_seen: row.get(1)?,
+            last_seen: row.get(2)?,
+            age_days: row.get(3)?,
+            host_count: row.get::<_, i64>(4)? as usize,
+        })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .context("failed to load public key age records")
+}
+
+pub fn load_host_server_key_records(path: &Path) -> Result<Vec<HostServerKeyRecord>> {
+    initialize_database(path)?;
+    let connection = Connection::open(path)
+        .with_context(|| format!("failed to open database at {}", path.display()))?;
+    apply_pragmas(&connection)?;
+    let mut statement = connection.prepare(
+        "SELECT host_id, key_type, fingerprint_sha256, first_seen, last_seen, source
+         FROM host_server_keys",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok(HostServerKeyRecord {
+            host_id: row.get(0)?,
+            key_type: row.get(1)?,
+            fingerprint_sha256: row.get(2)?,
+            first_seen: row.get(3)?,
+            last_seen: row.get(4)?,
+            source: row.get(5)?,
+        })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .context("failed to load host server key records")
+}
+
+pub fn upsert_host_server_keys(
+    connection: &Connection,
+    host_id: i64,
+    keys: &[ScannedServerHostKey],
+    source: &str,
+) -> Result<()> {
+    let now = Utc::now().to_rfc3339();
+    for key in keys {
+        connection.execute(
+            "INSERT INTO host_server_keys (
+                host_id, key_type, fingerprint_sha256, public_key, first_seen, last_seen, source
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            ON CONFLICT(host_id, fingerprint_sha256) DO UPDATE SET
+                key_type = excluded.key_type,
+                public_key = COALESCE(excluded.public_key, host_server_keys.public_key),
+                last_seen = excluded.last_seen,
+                source = excluded.source",
+            params![
+                host_id,
+                key.key_type,
+                key.fingerprint_sha256,
+                key.public_key,
+                now,
+                now,
+                source
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+pub fn load_raw_evidence_for_scan_run(
+    path: &Path,
+    scan_run_id: i64,
+    host_id: Option<i64>,
+) -> Result<Vec<(i64, String, String, String)>> {
+    initialize_database(path)?;
+    let connection = Connection::open(path)
+        .with_context(|| format!("failed to open database at {}", path.display()))?;
+    apply_pragmas(&connection)?;
+    if let Some(host_id) = host_id {
+        let mut statement = connection.prepare(
+            "SELECT host_id, evidence_type, COALESCE(content_hash, ''), COALESCE(content, '')
+             FROM raw_evidence
+             WHERE scan_run_id = ?1 AND host_id = ?2",
+        )?;
+        let rows = statement.query_map(params![scan_run_id, host_id], map_evidence_row)?;
+        return rows
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .context("failed to load raw evidence for scan run");
+    }
+
+    let mut statement = connection.prepare(
+        "SELECT host_id, evidence_type, COALESCE(content_hash, ''), COALESCE(content, '')
+         FROM raw_evidence
+         WHERE scan_run_id = ?1",
+    )?;
+    let rows = statement.query_map(params![scan_run_id], map_evidence_row)?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .context("failed to load raw evidence for scan run")
+}
+
+fn map_evidence_row(row: &Row<'_>) -> rusqlite::Result<(i64, String, String, String)> {
+    Ok((
+        row.get(0)?,
+        row.get(1)?,
+        row.get(2)?,
+        row.get(3)?,
+    ))
+}
+
+pub fn list_recent_scan_run_ids(path: &Path, limit: usize) -> Result<Vec<i64>> {
+    initialize_database(path)?;
+    let connection = Connection::open(path)
+        .with_context(|| format!("failed to open database at {}", path.display()))?;
+    apply_pragmas(&connection)?;
+    let mut statement = connection.prepare(
+        "SELECT id FROM scan_runs WHERE status = 'completed' ORDER BY id DESC LIMIT ?1",
+    )?;
+    let rows = statement.query_map(params![limit as i64], |row| row.get(0))?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .context("failed to list recent scan runs")
+}
+
+pub fn load_operations_metrics(path: &Path) -> Result<OperationsMetricsRecord> {
+    initialize_database(path)?;
+    let connection = Connection::open(path)
+        .with_context(|| format!("failed to open database at {}", path.display()))?;
+    apply_pragmas(&connection)?;
+
+    let total_hosts = count_rows(&connection, "hosts")?;
+    let hosts_with_users: usize = connection.query_row(
+        "SELECT COUNT(DISTINCT host_id) FROM users",
+        [],
+        |row| row.get(0),
+    )?;
+    let hosts_without_users = total_hosts.saturating_sub(hosts_with_users);
+    let scan_coverage_percent = if total_hosts == 0 {
+        0.0
+    } else {
+        (hosts_with_users as f64 / total_hosts as f64) * 100.0
+    };
+
+    let mut severity_distribution = std::collections::BTreeMap::new();
+    let mut statement =
+        connection.prepare("SELECT severity, COUNT(*) FROM risks GROUP BY severity")?;
+    let rows = statement.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as usize))
+    })?;
+    for row in rows {
+        let (severity, count) = row?;
+        severity_distribution.insert(severity, count);
+    }
+
+    let baselines = list_baselines(path)?;
+    let baseline_trend = baselines
+        .into_iter()
+        .map(|baseline| BaselineTrendPoint {
+            name: baseline.name,
+            created_at: baseline.created_at,
+            critical_risks: baseline.summary.critical_risks,
+            high_risks: baseline.summary.high_risks,
+            total_risks: baseline.summary.risks,
+        })
+        .collect();
+
+    Ok(OperationsMetricsRecord {
+        scan_coverage_percent,
+        hosts_with_users,
+        hosts_without_users,
+        severity_distribution,
+        baseline_trend,
+    })
+}
+
+pub fn list_active_risk_codes(path: &Path) -> Result<Vec<String>> {
+    initialize_database(path)?;
+    let connection = Connection::open(path)
+        .with_context(|| format!("failed to open database at {}", path.display()))?;
+    apply_pragmas(&connection)?;
+    let mut statement =
+        connection.prepare("SELECT DISTINCT risk_code FROM risks ORDER BY risk_code")?;
+    let rows = statement.query_map([], |row| row.get(0))?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .context("failed to list active risk codes")
+}
+
 pub fn rebuild_graph_edges(path: &Path) -> Result<()> {
     initialize_database(path)?;
     let connection = Connection::open(path)
@@ -1391,6 +1660,7 @@ pub fn rebuild_graph_edges(path: &Path) -> Result<()> {
     connection.execute("DELETE FROM graph_edges", [])?;
     insert_host_user_edges(&connection)?;
     insert_public_key_edges(&connection)?;
+    insert_certificate_authority_edges(&connection)?;
     insert_sudo_edges(&connection)?;
     insert_client_config_edges(&connection)?;
     Ok(())
@@ -1952,29 +2222,32 @@ fn insert_baseline_risk_snapshot(
     Ok(())
 }
 
-fn upsert_host(connection: &Connection, result: &DiscoveryResult) -> Result<()> {
+fn upsert_host(connection: &Connection, result: &DiscoveryResult) -> Result<i64> {
     let port = i64::from(result.port);
     if let Some(host_id) = find_host_id_for_target(connection, &result.host, port)? {
-        return update_existing_host_record(
+        update_existing_host_record(
             connection,
             host_id,
             &result.host,
             result.ssh_open,
             result.banner.as_deref(),
+            result.openssh_version.as_deref(),
             "discover",
-        );
+        )?;
+        return Ok(host_id);
     }
 
     let now = Utc::now().to_rfc3339();
     let hostname = result.hostname_hint();
     connection.execute(
         "INSERT INTO hosts (
-            hostname, ip_address, port, ssh_open, ssh_banner, first_seen, last_seen, source
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'discover')
+            hostname, ip_address, port, ssh_open, ssh_banner, openssh_version, first_seen, last_seen, source
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'discover')
         ON CONFLICT(ip_address, port) DO UPDATE SET
             hostname = COALESCE(excluded.hostname, hosts.hostname),
             ssh_open = excluded.ssh_open,
             ssh_banner = excluded.ssh_banner,
+            openssh_version = COALESCE(excluded.openssh_version, hosts.openssh_version),
             last_seen = excluded.last_seen,
             source = excluded.source",
         params![
@@ -1983,12 +2256,14 @@ fn upsert_host(connection: &Connection, result: &DiscoveryResult) -> Result<()> 
             result.port,
             result.ssh_open as i64,
             result.banner,
+            result.openssh_version,
             now,
             now
         ],
     )?;
 
-    Ok(())
+    find_host_id_for_target(connection, &result.host, port)?
+        .context("failed to resolve host after discovery upsert")
 }
 
 fn upsert_scanned_host(connection: &Connection, result: &HostScanResult) -> Result<i64> {
@@ -2000,6 +2275,7 @@ fn upsert_scanned_host(connection: &Connection, result: &HostScanResult) -> Resu
             host_id,
             &result.host,
             result.succeeded(),
+            None,
             None,
             "scan",
         )?;
@@ -2097,6 +2373,7 @@ fn update_existing_host_record(
     target: &str,
     ssh_open: bool,
     ssh_banner: Option<&str>,
+    openssh_version: Option<&str>,
     source: &str,
 ) -> Result<()> {
     let now = Utc::now().to_rfc3339();
@@ -2109,14 +2386,16 @@ fn update_existing_host_record(
             ip_address = COALESCE(?2, ip_address),
             ssh_open = ?3,
             ssh_banner = COALESCE(?4, ssh_banner),
-            last_seen = ?5,
-            source = ?6
-         WHERE id = ?7",
+            openssh_version = COALESCE(?5, openssh_version),
+            last_seen = ?6,
+            source = ?7
+         WHERE id = ?8",
         params![
             hostname,
             ip_address,
             ssh_open as i64,
             ssh_banner,
+            openssh_version,
             now,
             source,
             host_id
@@ -2218,7 +2497,7 @@ fn upsert_import_host_by_target(connection: &Connection, target: &str) -> Result
     let (ip_address, port, hostname) = parse_host_target(target)
         .with_context(|| format!("invalid import host target: {target}"))?;
     if let Some(host_id) = find_host_id_for_target(connection, &ip_address, port)? {
-        update_existing_host_record(connection, host_id, &ip_address, true, None, "import")?;
+        update_existing_host_record(connection, host_id, &ip_address, true, None, None, "import")?;
         return Ok(host_id);
     }
 
@@ -2360,11 +2639,13 @@ fn upsert_public_key(connection: &Connection, public_key: &ParsedPublicKey) -> R
     let now = Utc::now().to_rfc3339();
     connection.execute(
         "INSERT INTO public_keys (
-            key_type, fingerprint_sha256, key_bits, key_comment, normalized_public_key, first_seen, last_seen
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            key_type, fingerprint_sha256, key_bits, key_comment, normalized_public_key,
+            certificate_signing_ca, first_seen, last_seen
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
         ON CONFLICT(fingerprint_sha256) DO UPDATE SET
             key_bits = COALESCE(excluded.key_bits, public_keys.key_bits),
             key_comment = COALESCE(excluded.key_comment, public_keys.key_comment),
+            certificate_signing_ca = COALESCE(excluded.certificate_signing_ca, public_keys.certificate_signing_ca),
             last_seen = excluded.last_seen",
         params![
             public_key.key_type,
@@ -2372,6 +2653,7 @@ fn upsert_public_key(connection: &Connection, public_key: &ParsedPublicKey) -> R
             public_key.key_bits,
             public_key.key_comment,
             public_key.normalized_public_key,
+            public_key.certificate_signing_ca,
             now,
             now
         ],
@@ -2904,6 +3186,59 @@ fn insert_host_user_edges(connection: &Connection) -> Result<()> {
             'User account exists on host'
         FROM users u
         JOIN hosts h ON h.id = u.host_id",
+        [],
+    )?;
+
+    Ok(())
+}
+
+fn insert_certificate_authority_edges(connection: &Connection) -> Result<()> {
+    connection.execute(
+        "INSERT OR IGNORE INTO graph_edges (
+            from_type, from_id, from_label, to_type, to_id, to_label,
+            edge_type, weight, confidence, evidence
+        )
+        SELECT
+            'SSH_CA',
+            MIN(pk.id),
+            pk.certificate_signing_ca,
+            'PUBLIC_KEY',
+            pk.id,
+            pk.fingerprint_sha256,
+            'SSH_CA_SIGNED_PUBLIC_KEY',
+            1,
+            'HIGH',
+            'Certificate-based authorized key'
+        FROM public_keys pk
+        WHERE pk.key_type LIKE '%-cert-%'
+          AND pk.certificate_signing_ca IS NOT NULL
+        GROUP BY pk.certificate_signing_ca, pk.id, pk.fingerprint_sha256",
+        [],
+    )?;
+
+    connection.execute(
+        "INSERT OR IGNORE INTO graph_edges (
+            from_type, from_id, from_label, to_type, to_id, to_label,
+            edge_type, weight, confidence, evidence
+        )
+        SELECT
+            'SSH_CA',
+            MIN(pk.id),
+            pk.certificate_signing_ca,
+            'USER',
+            u.id,
+            u.username || '@' || COALESCE(h.hostname, h.ip_address),
+            'SSH_CA_GRANTS_USER_ACCESS',
+            2,
+            'HIGH',
+            COALESCE(ak.source_file, 'authorized_keys')
+        FROM authorized_keys ak
+        JOIN public_keys pk ON pk.id = ak.public_key_id
+        JOIN users u ON u.id = ak.user_id
+        JOIN hosts h ON h.id = ak.host_id
+        WHERE pk.key_type LIKE '%-cert-%'
+          AND pk.certificate_signing_ca IS NOT NULL
+        GROUP BY pk.certificate_signing_ca, u.id, h.hostname, h.ip_address, ak.source_file",
         [],
     )?;
 

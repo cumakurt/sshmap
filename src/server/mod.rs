@@ -140,6 +140,10 @@ pub fn build_app(state: AppState, dashboard_dir: Option<PathBuf>) -> Router {
         .route("/api/host-aliases", get(api::list_host_aliases))
         .route("/api/data-quality", get(api::list_data_quality))
         .route("/api/remediation/{code}", get(api::get_remediation))
+        .route("/api/compliance", get(api::compliance_report))
+        .route("/api/operations-metrics", get(api::operations_metrics))
+        .route("/api/paths", get(api::find_paths))
+        .route("/api/key-blast-radius", get(api::key_blast_radius))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             api::auth_middleware,
@@ -180,12 +184,16 @@ pub fn build_api_summary(db_path: &std::path::Path) -> Result<ApiSummary> {
     let hosts = crate::db::list_hosts_read_only(db_path, 10_000)?;
     let reused_keys = crate::db::list_keys_read_only(db_path, 10_000, true)?;
     let (critical_risks, high_risks) = crate::db::count_open_risks_by_severity_read_only(db_path)?;
+    let metrics = crate::db::load_operations_metrics(db_path)?;
 
     Ok(ApiSummary {
         ssh_open_hosts: hosts.iter().filter(|host| host.ssh_open).count(),
         critical_risks,
         high_risks,
         reused_keys: reused_keys.len(),
+        scan_coverage_percent: metrics.scan_coverage_percent,
+        hosts_with_users: metrics.hosts_with_users,
+        severity_distribution: metrics.severity_distribution,
         stats,
     })
 }

@@ -50,7 +50,7 @@ pub fn run_analysis(
             analysis.summary(raw_evidence.len(), db::load_database_stats(db_path)?.risks)
         }
         AnalyzeScope::Risks => {
-            let mut risks = risk::generate_risks(&analysis, policy);
+            let mut risks = generate_risks_with_db_context(db_path, &analysis, policy)?;
             let exceptions = db::list_risk_exceptions(db_path)?;
             risks = exceptions::apply_exceptions(risks, &exceptions);
             let summary = analysis.summary(raw_evidence.len(), risks.len());
@@ -58,7 +58,7 @@ pub fn run_analysis(
             summary
         }
         AnalyzeScope::All => {
-            let mut risks = risk::generate_risks(&analysis, policy);
+            let mut risks = generate_risks_with_db_context(db_path, &analysis, policy)?;
             let exceptions = db::list_risk_exceptions(db_path)?;
             risks = exceptions::apply_exceptions(risks, &exceptions);
             let summary = analysis.summary(raw_evidence.len(), risks.len());
@@ -73,6 +73,27 @@ pub fn run_analysis(
 
     db::record_analysis_finished(db_path)?;
     Ok(summary)
+}
+
+fn generate_risks_with_db_context(
+    db_path: &Path,
+    analysis: &NormalizedAnalysis,
+    policy: &RiskPolicy,
+) -> Result<Vec<crate::models::GeneratedRisk>> {
+    let hosts = db::load_host_context_records(db_path)?;
+    let host_banners = db::load_host_banners(db_path)?;
+    let key_ages = db::load_public_key_age_records(db_path)?;
+    let server_host_keys = db::load_host_server_key_records(db_path)?;
+    Ok(risk::generate_risks_with_enrichment(
+        analysis,
+        policy,
+        &risk::RiskEnrichmentInput {
+            hosts: &hosts,
+            host_banners: &host_banners,
+            key_ages: &key_ages,
+            server_host_keys: &server_host_keys,
+        },
+    ))
 }
 
 fn build_normalized_analysis(raw_evidence: &[RawEvidenceForAnalysis]) -> NormalizedAnalysis {

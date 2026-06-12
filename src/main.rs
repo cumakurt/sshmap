@@ -5,6 +5,7 @@ mod bench;
 mod cli;
 mod cli_help;
 mod collector;
+mod compliance;
 mod config;
 mod csv;
 mod db;
@@ -12,10 +13,14 @@ mod discovery;
 mod doctor;
 mod enrich;
 mod error;
+mod evidence_drift;
 mod exceptions;
 mod export;
 mod graph;
+mod host_context;
+mod host_key_scan;
 mod importer;
+mod merge;
 mod models;
 mod output;
 mod parser;
@@ -24,6 +29,7 @@ mod report;
 mod risk;
 mod scope;
 mod server;
+mod ssh_version;
 mod target;
 mod transport;
 
@@ -384,13 +390,95 @@ async fn main() -> Result<()> {
             }
         },
         Command::Diff(args) => {
-            let diff = db::diff_baselines(&args.db, &args.from, &args.to)?;
-            if args.json {
-                println!("{}", serde_json::to_string_pretty(&diff)?);
+            if args.evidence {
+                let host_id = if let Some(host) = &args.host {
+                    let Some(host_detail) = db::get_host_detail(&args.db, host)? else {
+                        anyhow::bail!("host {host} was not found");
+                    };
+                    Some(host_detail.host.id)
+                } else {
+                    None
+                };
+                let (from_run, to_run) = match (args.from_scan_run, args.to_scan_run) {
+                    (Some(from), Some(to)) => (from, to),
+                    _ => {
+                        let runs = db::list_recent_scan_run_ids(&args.db, 2)?;
+                        if runs.len() < 2 {
+                            anyhow::bail!("at least two completed scan runs are required for evidence drift");
+                        }
+                        (runs[1], runs[0])
+                    }
+                };
+                let from_evidence =
+                    db::load_raw_evidence_for_scan_run(&args.db, from_run, host_id)?;
+                let to_evidence = db::load_raw_evidence_for_scan_run(&args.db, to_run, host_id)?;
+                let (hostname, ip_address) = if let Some(host_target) = &args.host {
+                    let host = db::get_host_detail(&args.db, host_target)?;
+                    (
+                        host.as_ref().and_then(|detail| detail.host.hostname.clone()),
+                        host.map(|detail| detail.host.ip_address),
+                    )
+                } else {
+                    (None, None)
+                };
+                let map_evidence = |rows: &[(i64, String, String, String)]| {
+                    rows.iter()
+                        .map(|(_, evidence_type, hash, content)| {
+                            (evidence_type.clone(), hash.clone(), content.clone())
+                        })
+                        .collect::<Vec<_>>()
+                };
+                let report = evidence_drift::build_evidence_drift_report(
+                    host_id.unwrap_or(0),
+                    hostname,
+                    ip_address,
+                    from_run,
+                    to_run,
+                    &map_evidence(&from_evidence),
+                    &map_evidence(&to_evidence),
+                );
+                if args.json {
+                    println!("{}", serde_json::to_string_pretty(&report)?);
+                } else {
+                    print!("{}", output::format_evidence_drift_text(&report));
+                }
             } else {
-                print!("{}", output::format_baseline_diff_text(&diff));
+                let from = args
+                    .from
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("--from is required for baseline diff"))?;
+                let to = args.to.as_deref().unwrap_or("latest");
+                let diff = db::diff_baselines(&args.db, from, to)?;
+                if args.json {
+                    println!("{}", serde_json::to_string_pretty(&diff)?);
+                } else {
+                    print!("{}", output::format_baseline_diff_text(&diff));
+                }
             }
         }
+        Command::Merge(args) => {
+            let sources = args.from.iter().map(|path| path.as_path()).collect::<Vec<_>>();
+            let summary = merge::merge_databases(&sources, &args.output)?;
+            if args.json {
+                println!("{}", serde_json::to_string_pretty(&summary)?);
+            } else {
+                println!("Merged {} source databases into {}", summary.source_databases, args.output.display());
+                println!("Hosts imported: {}", summary.hosts_imported);
+                println!("Risks imported: {}", summary.risks_imported);
+                println!("Graph edges imported: {}", summary.graph_edges_imported);
+            }
+        }
+        Command::Compliance { command } => match command {
+            cli::ComplianceCommand::Report(args) => {
+                let risk_codes = db::list_active_risk_codes(&args.db)?;
+                let report = compliance::build_compliance_report(&args.framework, &risk_codes);
+                if args.json {
+                    println!("{}", serde_json::to_string_pretty(&report)?);
+                } else {
+                    print!("{}", output::format_compliance_report_text(&report));
+                }
+            }
+        },
         Command::Graph { command } => match command {
             cli::GraphCommand::Export(args) => {
                 let edges = db::list_graph_edges(&args.db)?;
@@ -408,11 +496,30 @@ async fn main() -> Result<()> {
                 anyhow::bail!("graph node {} was not found", args.to);
             };
             let edges = db::list_graph_edges_for_analysis(&args.db)?;
-            let path = graph::find_path(&edges, start, end);
+            let path = if args.weighted {
+                graph::find_weighted_path(&edges, start, end)
+            } else {
+                graph::find_path(&edges, start, end)
+            };
             if args.json {
                 println!("{}", serde_json::to_string_pretty(&path)?);
             } else {
                 print!("{}", graph::format_path_text(&path));
+            }
+        }
+        Command::Paths(args) => {
+            let Some(start) = db::resolve_graph_node_ref(&args.db, &args.from)? else {
+                anyhow::bail!("graph node {} was not found", args.from);
+            };
+            let Some(end) = db::resolve_graph_node_ref(&args.db, &args.to)? else {
+                anyhow::bail!("graph node {} was not found", args.to);
+            };
+            let edges = db::list_graph_edges_for_analysis(&args.db)?;
+            let paths = graph::find_all_paths(&edges, start, end, args.limit.max(1));
+            if args.json {
+                println!("{}", serde_json::to_string_pretty(&paths)?);
+            } else {
+                print!("{}", graph::format_paths_text(&paths));
             }
         }
         Command::BlastRadius(args) => {
@@ -426,6 +533,26 @@ async fn main() -> Result<()> {
                 println!("{}", serde_json::to_string_pretty(&blast_radius)?);
             } else {
                 print!("{}", graph::format_blast_radius_text(&blast_radius));
+            }
+        }
+        Command::KeyBlastRadius(args) => {
+            let fingerprint = args
+                .fingerprint
+                .strip_prefix("key:")
+                .unwrap_or(&args.fingerprint)
+                .to_string();
+            let entry_points =
+                db::list_public_key_nodes_by_fingerprint(&args.db, &fingerprint)?;
+            if entry_points.is_empty() {
+                anyhow::bail!("public key {fingerprint} was not found in the analyzed inventory");
+            }
+            let edges = db::list_graph_edges_for_analysis(&args.db)?;
+            let blast_radius =
+                graph::compute_key_compromise_blast_radius(&edges, &fingerprint, &entry_points);
+            if args.json {
+                println!("{}", serde_json::to_string_pretty(&blast_radius)?);
+            } else {
+                print!("{}", graph::format_key_blast_radius_text(&blast_radius));
             }
         }
         Command::Import { command } => {

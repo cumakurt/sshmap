@@ -1,5 +1,6 @@
 use crate::models::{ParsedAuthorizedKey, ParsedPublicKey};
 use anyhow::Result;
+use std::collections::BTreeMap;
 use base64::Engine;
 use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD};
 use sha2::{Digest, Sha256};
@@ -93,6 +94,12 @@ fn parse_authorized_key_line(
     let permits_agent_forwarding = !option_value.contains("no-agent-forwarding");
     let permits_x11_forwarding = !option_value.contains("no-X11-forwarding");
 
+    let certificate_signing_ca = if key_type.ends_with("-cert-v01@openssh.com") {
+        certificate_signing_ca_fingerprint(&key_bytes)
+    } else {
+        None
+    };
+
     Ok(ParsedAuthorizedKey {
         host_id,
         username: username.to_string(),
@@ -102,6 +109,7 @@ fn parse_authorized_key_line(
             key_bits: key_bits(&key_type, &key_bytes),
             key_comment: comment,
             normalized_public_key: format!("{key_type} {key_blob}"),
+            certificate_signing_ca,
         },
         source_file: source_file.to_string(),
         line_number: line_number as i64,
@@ -113,6 +121,29 @@ fn parse_authorized_key_line(
         permits_agent_forwarding,
         permits_x11_forwarding,
     })
+}
+
+fn certificate_signing_ca_fingerprint(cert_bytes: &[u8]) -> Option<String> {
+    let mut cursor = KeyBlobCursor::new(cert_bytes);
+    cursor.read_string().ok()?;
+    cursor.read_string().ok()?;
+    cursor.read_u64().ok()?;
+    cursor.read_u32().ok()?;
+    cursor.read_string().ok()?;
+    cursor.read_string_list().ok()?;
+    cursor.read_u64().ok()?;
+    cursor.read_u64().ok()?;
+    cursor.read_options().ok()?;
+    cursor.read_options().ok()?;
+    cursor.read_string().ok()?;
+    let signing_key_bytes = cursor.read_bytes().ok()?;
+    if signing_key_bytes.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "SHA256:{}",
+        STANDARD_NO_PAD.encode(Sha256::digest(signing_key_bytes))
+    ))
 }
 
 fn key_bits(key_type: &str, key_bytes: &[u8]) -> Option<i64> {
@@ -154,6 +185,42 @@ impl<'a> KeyBlobCursor<'a> {
 
     fn read_mpint(&mut self) -> Result<&'a [u8]> {
         self.read_bytes()
+    }
+
+    fn read_u64(&mut self) -> Result<u64> {
+        let bytes = self.read_bytes()?;
+        let mut value = [0_u8; 8];
+        let start = 8usize.saturating_sub(bytes.len());
+        value[start..].copy_from_slice(bytes);
+        Ok(u64::from_be_bytes(value))
+    }
+
+    fn read_u32(&mut self) -> Result<u32> {
+        let bytes = self.read_bytes()?;
+        let mut value = [0_u8; 4];
+        let start = 4usize.saturating_sub(bytes.len());
+        value[start..].copy_from_slice(bytes);
+        Ok(u32::from_be_bytes(value))
+    }
+
+    fn read_string_list(&mut self) -> Result<Vec<String>> {
+        let count = self.read_u32()? as usize;
+        let mut values = Vec::with_capacity(count);
+        for _ in 0..count {
+            values.push(self.read_string()?);
+        }
+        Ok(values)
+    }
+
+    fn read_options(&mut self) -> Result<BTreeMap<String, String>> {
+        let count = self.read_u32()? as usize;
+        let mut options = BTreeMap::new();
+        for _ in 0..count {
+            let key = self.read_string()?;
+            let value = self.read_string()?;
+            options.insert(key, value);
+        }
+        Ok(options)
     }
 
     fn read_bytes(&mut self) -> Result<&'a [u8]> {
